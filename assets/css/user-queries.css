@@ -1,0 +1,84 @@
+/* User Queries CSS */
+.csd-user-queries {
+	margin-bottom: 30px;
+}
+
+.csd-query-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.csd-query-list li {
+	padding: 15px;
+	margin-bottom: 10px;
+	background: #f9f9f9;
+	border: 1px solid #ddd;
+	border-radius: 4px;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	flex-wrap: wrap;
+}
+
+.csd-query-list li:hover {
+	background: #f0f0f0;
+}
+
+.csd-query-list a {
+	font-weight: bold;
+	text-decoration: none;
+	color: #0073aa;
+	font-size: 16px;
+}
+
+.csd-query-date {
+	color: #666;
+	font-size: 14px;
+	font-style: italic;
+}
+
+.csd-user-query-container {
+	margin-bottom: 30px;
+}
+
+.csd-query-back {
+	margin-bottom: 20px;
+}
+
+.csd-query-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 20px;
+}
+
+.csd-query-title {
+	margin: 0;
+}
+
+@media screen and (max-width: 768px) {
+	.csd-query-list li {
+		padding: 10px;
+	}
+	
+	.csd-query-list a {
+		margin-bottom: 5px;
+		display: block;
+		width: 100%;
+	}
+	
+	.csd-query-date {
+		display: block;
+		width: 100%;
+	}
+	
+	.csd-query-header {
+		flex-direction: column;
+		align-items: flex-start;
+	}
+	
+	.csd-query-title {
+		margin-bottom: 10px;
+	}
+}
