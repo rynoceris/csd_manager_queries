@@ -163,7 +163,7 @@ class CSD_Query_Builder {
 		$this->render_user_assignment_modal();
 		?>
 		<div class="wrap">
-			<h1><?php _e('Custom Query Builder', 'csd-manager'); ?></h1>
+			<h1 style="display: inline;"><?php _e('Custom Query Builder', 'csd-manager'); ?></h1>&nbsp;|&nbsp;<a href="https://use1.brightpearlapp.com/report.php?report_type=sales&output=screen&order_type=1&date_timeframe=30days&date_type=date_purchased&sortby=o.orders_id&sort_dir=DESC&hide_cancelled=true" target="_blank">Create Brightpearl Quote</a>&nbsp;|&nbsp;<a href="https://collegesportsdirectory.com/cc-auth/" target="_blank">Generate Credit Card Auth PDF</a>
 			
 			<div class="csd-query-builder-container">
 				<!-- Saved queries section -->
@@ -898,6 +898,267 @@ class CSD_Query_Builder {
 				}
 			}
 		</style>
+		<!-- Add this just before the final closing PHP tag -->
+		<script type="text/javascript">
+		(function($) {
+			'use strict';
+			
+			$(document).ready(function() {
+				// Add "Assign to Users" button to each query in the saved queries list
+				$('#csd-load-query').after('<button type="button" id="csd-assign-query-btn" class="button"><?php _e('Assign to Users', 'csd-manager'); ?></button>');
+					
+				// Handle click on "Assign to Users" button
+				$('#csd-assign-query-btn').on('click', function() {
+					var queryId = $('#csd-load-query').val();
+					var queryName = $('#csd-load-query option:selected').text();
+					
+					if (!queryId) {
+						alert('<?php _e('Please select a saved query first.', 'csd-manager'); ?>');
+						return;
+					}
+					
+					// Initialize Select2 for user selection if it exists
+					if (typeof $.fn.select2 !== 'undefined') {
+						$('#csd-user-select').select2({
+							placeholder: '<?php _e('Select users...', 'csd-manager'); ?>',
+							width: '100%',
+							ajax: {
+								url: csd_ajax.ajax_url,
+								dataType: 'json',
+								delay: 250,
+								data: function (params) {
+									return {
+										action: 'csd_search_users',
+										search: params.term,
+										nonce: csd_ajax.nonce
+									};
+								},
+								processResults: function (data) {
+									return {
+										results: data.data.users
+									};
+								},
+								cache: true
+							},
+							minimumInputLength: 2
+						});
+					}
+					
+					// Set query ID and name
+					$('#csd-assign-query-id').val(queryId);
+					$('#csd-assign-query-name').text(queryName);
+					
+					// Load current assignments
+					loadQueryUsers(queryId);
+					
+					// Show the modal
+					$('#csd-user-assignment-modal').show();
+				});
+				
+				// Close modal when clicking on X or Cancel
+				$('.csd-modal-close, #csd-cancel-assignment').on('click', function() {
+					$('#csd-user-assignment-modal').hide();
+				});
+				
+				// Also close modal when clicking outside of modal content
+				$(window).on('click', function(event) {
+					var modal = $('#csd-user-assignment-modal');
+					if (event.target === modal[0]) {
+						modal.hide();
+					}
+				});
+				
+				// Assign to selected users
+				$('#csd-assign-users').on('click', function() {
+					var queryId = $('#csd-assign-query-id').val();
+					var userIds = $('#csd-user-select').val();
+					
+					if (!queryId) {
+						alert('<?php _e('Query ID is missing.', 'csd-manager'); ?>');
+						return;
+					}
+					
+					if (!userIds || userIds.length === 0) {
+						alert('<?php _e('Please select at least one user.', 'csd-manager'); ?>');
+						return;
+					}
+					
+					// Show loading state
+					$('#csd-assign-users').prop('disabled', true).text('<?php _e('Assigning...', 'csd-manager'); ?>');
+					
+					// Call AJAX to assign
+					$.ajax({
+						url: csd_ajax.ajax_url,
+						type: 'POST',
+						data: {
+							action: 'csd_assign_query_to_users',
+							query_id: queryId,
+							user_ids: userIds,
+							nonce: csd_ajax.nonce
+						},
+						success: function(response) {
+							$('#csd-assign-users').prop('disabled', false).text('<?php _e('Assign to Selected Users', 'csd-manager'); ?>');
+							
+							if (response.success) {
+								// Show success message
+								$('#csd-assignment-message')
+									.removeClass('notice-error')
+									.addClass('notice-success')
+									.html('<p>' + response.data.message + '</p>')
+									.show();
+								
+								// Clear selection
+								$('#csd-user-select').val(null).trigger('change');
+								
+								// Reload assignments
+								loadQueryUsers(queryId);
+							} else {
+								// Show error message
+								$('#csd-assignment-message')
+									.removeClass('notice-success')
+									.addClass('notice-error')
+									.html('<p>' + (response.data.message || '<?php _e('Error assigning query to users.', 'csd-manager'); ?>') + '</p>')
+									.show();
+							}
+						},
+						error: function() {
+							$('#csd-assign-users').prop('disabled', false).text('<?php _e('Assign to Selected Users', 'csd-manager'); ?>');
+							
+							// Show error message
+							$('#csd-assignment-message')
+								.removeClass('notice-success')
+								.addClass('notice-error')
+								.html('<p><?php _e('Error connecting to server. Please try again.', 'csd-manager'); ?></p>')
+								.show();
+						}
+					});
+				});
+					
+				// Load query users
+				function loadQueryUsers(queryId) {
+					$('#csd-current-users-list').html('<p><?php _e('Loading...', 'csd-manager'); ?></p>');
+					
+					$.ajax({
+						url: csd_ajax.ajax_url,
+						type: 'POST',
+						data: {
+							action: 'csd_get_query_users',
+							query_id: queryId,
+							nonce: csd_ajax.nonce
+						},
+						success: function(response) {
+							if (response.success) {
+								var users = response.data.users;
+								
+								if (users.length === 0) {
+									$('#csd-current-users-list').html('<p><?php _e('No users currently assigned to this query.', 'csd-manager'); ?></p>');
+									return;
+								}
+								
+								var html = '<div class="csd-user-list">';
+								html += '<table>';
+								html += '<thead><tr>';
+								html += '<th><?php _e('Name', 'csd-manager'); ?></th>';
+								html += '<th><?php _e('Email', 'csd-manager'); ?></th>';
+								html += '<th><?php _e('Date Assigned', 'csd-manager'); ?></th>';
+								html += '<th><?php _e('Actions', 'csd-manager'); ?></th>';
+								html += '</tr></thead>';
+								html += '<tbody>';
+								
+								$.each(users, function(index, user) {
+									html += '<tr>';
+									html += '<td>' + user.name + '</td>';
+									html += '<td>' + user.email + '</td>';
+									html += '<td>' + formatDate(user.date_assigned) + '</td>';
+									html += '<td class="csd-user-actions">';
+									html += '<button type="button" class="button button-small csd-remove-user" data-id="' + user.assignment_id + '">';
+									html += '<?php _e('Remove', 'csd-manager'); ?>';
+									html += '</button>';
+									html += '</td>';
+									html += '</tr>';
+								});
+								
+								html += '</tbody></table></div>';
+								
+								$('#csd-current-users-list').html(html);
+							} else {
+								$('#csd-current-users-list').html('<p class="notice notice-error">' + (response.data.message || '<?php _e('Error loading assigned users.', 'csd-manager'); ?>') + '</p>');
+							}
+						},
+						error: function() {
+							$('#csd-current-users-list').html('<p class="notice notice-error"><?php _e('Error connecting to server. Please try again.', 'csd-manager'); ?></p>');
+						}
+					});
+				}
+				
+				// Remove user assignment
+				$(document).on('click', '.csd-remove-user', function() {
+					if (!confirm('<?php _e('Are you sure you want to remove this user assignment?', 'csd-manager'); ?>')) {
+						return;
+					}
+					
+					var assignmentId = $(this).data('id');
+					var queryId = $('#csd-assign-query-id').val();
+					
+					$(this).prop('disabled', true).text('<?php _e('Removing...', 'csd-manager'); ?>');
+					
+					$.ajax({
+						url: csd_ajax.ajax_url,
+						type: 'POST',
+						data: {
+							action: 'csd_remove_query_user',
+							assignment_id: assignmentId,
+							nonce: csd_ajax.nonce
+						},
+						success: function(response) {
+							if (response.success) {
+								// Show success message
+								$('#csd-assignment-message')
+									.removeClass('notice-error')
+									.addClass('notice-success')
+									.html('<p>' + response.data.message + '</p>')
+									.show();
+								
+								// Reload assignments
+								loadQueryUsers(queryId);
+							} else {
+								// Show error message
+								$('#csd-assignment-message')
+									.removeClass('notice-success')
+									.addClass('notice-error')
+									.html('<p>' + (response.data.message || '<?php _e('Error removing user assignment.', 'csd-manager'); ?>') + '</p>')
+									.show();
+								
+								// Re-enable button
+								$('.csd-remove-user[data-id="' + assignmentId + '"]')
+									.prop('disabled', false)
+									.text('<?php _e('Remove', 'csd-manager'); ?>');
+							}
+						},
+						error: function() {
+							// Show error message
+							$('#csd-assignment-message')
+								.removeClass('notice-success')
+								.addClass('notice-error')
+								.html('<p><?php _e('Error connecting to server. Please try again.', 'csd-manager'); ?></p>')
+								.show();
+							
+							// Re-enable button
+							$('.csd-remove-user[data-id="' + assignmentId + '"]')
+								.prop('disabled', false)
+								.text('<?php _e('Remove', 'csd-manager'); ?>');
+						}
+					});
+				});
+				
+				// Format date for display
+				function formatDate(dateString) {
+					var date = new Date(dateString);
+					return date.toLocaleDateString();
+				}
+			});
+		})(jQuery);
+		</script>
 		<?php
 	}
 	
@@ -977,7 +1238,7 @@ class CSD_Query_Builder {
 	 * @param array $form_data Form data
 	 * @return string SQL count query
 	 */
-	private function build_count_sql_query($form_data) {
+	public function build_count_sql_query($form_data) {
 		// Determine which tables are needed
 		$tables_needed = array();
 		foreach ($form_data['fields'] as $field) {
@@ -1186,7 +1447,7 @@ class CSD_Query_Builder {
 	 * @param string $sql SQL count query
 	 * @return int Total count
 	 */
-	private function get_query_count($sql) {
+	public function get_query_count($sql) {
 		$wpdb = csd_db_connection();
 		$result = $wpdb->get_row($sql);
 		
@@ -1298,7 +1559,7 @@ class CSD_Query_Builder {
 	 * @param int $per_page Records per page
 	 * @return string SQL query
 	 */
-	private function build_sql_query($form_data, $add_pagination = false, $page = 1, $per_page = 25) {
+	public function build_sql_query($form_data, $add_pagination = false, $page = 1, $per_page = 25) {
 		// Extract selected fields
 		$fields = $form_data['fields'];
 		
@@ -1583,7 +1844,7 @@ class CSD_Query_Builder {
 	 * @param string $sql SQL query
 	 * @return array Query results
 	 */
-	private function execute_query($sql) {
+	public function execute_query($sql) {
 		$wpdb = csd_db_connection();
 		
 		// Run the query

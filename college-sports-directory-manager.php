@@ -241,6 +241,17 @@ function csd_ajax_fetch_snapshot_wrapper() {
 	$snapshot_tool->ajax_fetch_snapshot();
 }
 
+// Add these functions to your plugin file:
+function csd_ajax_load_user_query() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/user-queries.php');
+	$user_queries = new CSD_User_Queries();
+	$user_queries->ajax_load_user_query();
+}
+
+// Register the AJAX actions with named functions
+add_action('wp_ajax_csd_load_user_query', 'csd_ajax_load_user_query');
+add_action('wp_ajax_nopriv_csd_load_user_query', 'csd_ajax_load_user_query');
+
 // User search AJAX handler
 add_action('wp_ajax_csd_search_users', 'csd_ajax_search_users_wrapper');
 function csd_ajax_search_users_wrapper() {

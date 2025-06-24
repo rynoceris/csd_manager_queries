@@ -51,7 +51,7 @@ class CSD_User_Queries {
 		$table_name = csd_table('user_queries');
 		$charset_collate = $wpdb->get_charset_collate();
 		
-		$sql = "CREATE TABLE IF NOT EXISTS $table_name (
+		$sql = "CREATE TABLE $table_name (
 			id mediumint(9) NOT NULL AUTO_INCREMENT,
 			query_id mediumint(9) NOT NULL,
 			user_id bigint(20) NOT NULL,
@@ -329,6 +329,7 @@ class CSD_User_Queries {
 	public function user_queries_shortcode($atts) {
 		$atts = shortcode_atts(array(
 			'title' => __('My Saved Reports', 'csd-manager'),
+			'view_page' => '', // ID or URL of the page with the csd_user_query shortcode
 		), $atts);
 		
 		// Check if user is logged in
@@ -338,6 +339,30 @@ class CSD_User_Queries {
 		
 		$user_id = get_current_user_id();
 		$queries = $this->get_user_queries($user_id);
+		
+		// Get the URL of the view page
+		$view_page_url = '';
+		if (!empty($atts['view_page'])) {
+			// If a page ID or URL was provided in the shortcode
+			if (is_numeric($atts['view_page'])) {
+				$view_page_url = get_permalink(intval($atts['view_page']));
+			} else {
+				$view_page_url = $atts['view_page'];
+			}
+		} else {
+			// Try to find a page with the user_query shortcode
+			$pages = get_pages(array(
+				'meta_key' => '_wp_page_template',
+				'hierarchical' => 0,
+			));
+			
+			foreach ($pages as $page) {
+				if (has_shortcode($page->post_content, 'csd_user_query')) {
+					$view_page_url = get_permalink($page->ID);
+					break;
+				}
+			}
+		}
 		
 		ob_start();
 		?>
@@ -350,7 +375,11 @@ class CSD_User_Queries {
 				<ul class="csd-query-list">
 					<?php foreach ($queries as $query): ?>
 						<li>
-							<a href="<?php echo esc_url(add_query_arg(array('query_id' => $query->query_id))); ?>">
+							<?php if (!empty($view_page_url)): ?>
+								<a href="<?php echo esc_url(add_query_arg('query_id', $query->query_id, $view_page_url)); ?>">
+							<?php else: ?>
+								<a href="<?php echo esc_url(add_query_arg('query_id', $query->query_id)); ?>">
+							<?php endif; ?>
 								<?php echo esc_html($query->query_name); ?>
 							</a>
 							<span class="csd-query-date">
@@ -646,90 +675,187 @@ class CSD_User_Queries {
 	 * AJAX handler for loading user query results
 	 */
 	public function ajax_load_user_query() {
-		// Check nonce
-		if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'csd-ajax-nonce')) {
-			wp_send_json_error(array('message' => __('Security check failed.', 'csd-manager')));
-			return;
-		}
-		
-		// Get parameters
-		$query_id = isset($_POST['query_id']) ? intval($_POST['query_id']) : 0;
-		$page = isset($_POST['page']) ? intval($_POST['page']) : 1;
-		$per_page = isset($_POST['per_page']) ? intval($_POST['per_page']) : 25;
-		
-		if (!$query_id) {
-			wp_send_json_error(array('message' => __('Invalid query ID.', 'csd-manager')));
-			return;
-		}
-		
-		// Check if user has access to this query
-		$user_id = get_current_user_id();
-		if (!$this->user_has_query_access($query_id, $user_id)) {
-			wp_send_json_error(array('message' => __('You do not have access to this report.', 'csd-manager')));
-			return;
-		}
-		
-		// Get query details
-		$query = $this->get_query($query_id);
-		if (!$query) {
-			wp_send_json_error(array('message' => __('Report not found.', 'csd-manager')));
-			return;
-		}
-		
-		// Parse query settings
-		$settings = json_decode($query->query_settings, true);
-		
 		try {
-			// Include query builder functionality
-			require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/query-builder.php');
-			$query_builder = new CSD_Query_Builder();
+			error_log('ajax_load_user_query method started');
 			
-			// Build SQL query with pagination
-			if (isset($settings['custom_sql']) && !empty($settings['custom_sql'])) {
-				// Use custom SQL
-				$sql = $settings['custom_sql'];
-				
-				// Add pagination if needed
-				if (strpos(strtoupper($sql), 'LIMIT') === false) {
-					$offset = ($page - 1) * $per_page;
-					$sql .= " LIMIT {$per_page} OFFSET {$offset}";
-				}
-				
-				// Run the query
-				$wpdb = csd_db_connection();
-				$results = $wpdb->get_results($sql, ARRAY_A);
-				
-				// Count total number of records
-				$count_sql = preg_replace('/^\s*SELECT\s+.+?\s+FROM\s+/is', 'SELECT COUNT(*) as total_count FROM ', $sql);
-				$count_sql = preg_replace('/\s+ORDER\s+BY\s+.+$/is', '', $count_sql);
-				$count_sql = preg_replace('/\s+LIMIT\s+\d+(?:\s*,\s*\d+)?$/is', '', $count_sql);
-				$count_sql = preg_replace('/\s+OFFSET\s+\d+$/is', '', $count_sql);
-				
-				$total_count = $wpdb->get_var($count_sql);
-			} else {
-				// Build form-based query
-				$form_data = $settings;
-				
-				// Build count query first to get total
-				$count_sql = $query_builder->build_count_sql_query($form_data);
-				$total_count = $query_builder->get_query_count($count_sql);
-				
-				// Then build and run the paginated query
-				$sql = $query_builder->build_sql_query($form_data, true, $page, $per_page);
-				$results = $query_builder->execute_query($sql);
+			// Check nonce
+			if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'csd-ajax-nonce')) {
+				error_log('Nonce verification failed');
+				wp_send_json_error(array('message' => __('Security check failed.', 'csd-manager')));
+				return;
 			}
 			
-			// Generate HTML output
-			$html = $this->generate_results_html($results, $page, $per_page, $total_count);
+			// Get parameters
+			$query_id = isset($_POST['query_id']) ? intval($_POST['query_id']) : 0;
+			$page = isset($_POST['page']) ? intval($_POST['page']) : 1;
+			$per_page = isset($_POST['per_page']) ? intval($_POST['per_page']) : 25;
 			
-			wp_send_json_success(array(
-				'html' => $html,
-				'count' => $total_count,
-				'page' => $page,
-				'per_page' => $per_page
-			));
+			error_log('Parameters: query_id=' . $query_id . ', page=' . $page . ', per_page=' . $per_page);
 			
+			if (!$query_id) {
+				error_log('Invalid query ID');
+				wp_send_json_error(array('message' => __('Invalid query ID.', 'csd-manager')));
+				return;
+			}
+			
+			// Check if user has access to this query
+			$user_id = get_current_user_id();
+			error_log('Checking access for user_id=' . $user_id);
+			
+			if (!$this->user_has_query_access($query_id, $user_id)) {
+				error_log('User does not have access to this query');
+				wp_send_json_error(array('message' => __('You do not have access to this report.', 'csd-manager')));
+				return;
+			}
+			
+			// Get query details
+			error_log('Getting query details');
+			$query = $this->get_query($query_id);
+			
+			if (!$query) {
+				error_log('Query not found');
+				wp_send_json_error(array('message' => __('Report not found.', 'csd-manager')));
+				return;
+			}
+			
+			error_log('Query found: ' . print_r($query, true));
+			
+			// Parse query settings
+			$settings = json_decode($query->query_settings, true);
+			error_log('Query settings parsed');
+			
+			// Check if Query Builder class is available
+			if (!file_exists(CSD_MANAGER_PLUGIN_DIR . 'includes/query-builder.php')) {
+				error_log('Query Builder file not found');
+				wp_send_json_error(array('message' => __('Required component not found.', 'csd-manager')));
+				return;
+			}
+			
+			// Include query builder functionality
+			require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/query-builder.php');
+			
+			if (!class_exists('CSD_Query_Builder')) {
+				error_log('CSD_Query_Builder class not found');
+				wp_send_json_error(array('message' => __('Required class not found.', 'csd-manager')));
+				return;
+			}
+			
+			$query_builder = new CSD_Query_Builder();
+			error_log('Query Builder instantiated');
+			
+			// Get database connection
+			$wpdb = csd_db_connection();
+			
+			if (!$wpdb) {
+				error_log('Database connection failed');
+				wp_send_json_error(array('message' => __('Database connection failed.', 'csd-manager')));
+				return;
+			}
+			
+			error_log('Database connection established');
+			
+			try {
+				// Build SQL query with pagination
+				if (isset($settings['custom_sql']) && !empty($settings['custom_sql'])) {
+					// Use custom SQL
+					$sql = $settings['custom_sql'];
+					error_log('Using custom SQL: ' . $sql);
+					
+					// Add pagination if needed
+					if (strpos(strtoupper($sql), 'LIMIT') === false) {
+						$offset = ($page - 1) * $per_page;
+						$sql .= " LIMIT {$per_page} OFFSET {$offset}";
+						error_log('Added pagination to SQL: ' . $sql);
+					}
+					
+					// Run the query
+					error_log('Executing query');
+					$results = $wpdb->get_results($sql, ARRAY_A);
+					
+					if ($wpdb->last_error) {
+						error_log('Database error: ' . $wpdb->last_error);
+						throw new Exception('Database error: ' . $wpdb->last_error);
+					}
+					
+					error_log('Query executed, found ' . count($results) . ' results');
+					
+					// Count total number of records
+					$count_sql = preg_replace('/^\s*SELECT\s+.+?\s+FROM\s+/is', 'SELECT COUNT(*) as total_count FROM ', $sql);
+					$count_sql = preg_replace('/\s+ORDER\s+BY\s+.+$/is', '', $count_sql);
+					$count_sql = preg_replace('/\s+LIMIT\s+\d+(?:\s*,\s*\d+)?$/is', '', $count_sql);
+					$count_sql = preg_replace('/\s+OFFSET\s+\d+$/is', '', $count_sql);
+					
+					error_log('Count SQL: ' . $count_sql);
+					$total_count = $wpdb->get_var($count_sql);
+					
+					if ($wpdb->last_error) {
+						error_log('Count query error: ' . $wpdb->last_error);
+						throw new Exception('Count query error: ' . $wpdb->last_error);
+					}
+					
+					error_log('Total count: ' . $total_count);
+				} else {
+					// Build form-based query
+					error_log('Building form-based query');
+					
+					// Ensure the query builder has the necessary methods
+					if (!method_exists($query_builder, 'build_count_sql_query')) {
+						error_log('build_count_sql_query method not found');
+						throw new Exception('Required method not found: build_count_sql_query');
+					}
+					
+					// Build count query first to get total
+					$count_sql = $query_builder->build_count_sql_query($settings);
+					error_log('Count SQL built: ' . $count_sql);
+					
+					if (!method_exists($query_builder, 'get_query_count')) {
+						error_log('get_query_count method not found');
+						throw new Exception('Required method not found: get_query_count');
+					}
+					
+					$total_count = $query_builder->get_query_count($count_sql);
+					error_log('Total count: ' . $total_count);
+					
+					// Then build and run the paginated query
+					if (!method_exists($query_builder, 'build_sql_query')) {
+						error_log('build_sql_query method not found');
+						throw new Exception('Required method not found: build_sql_query');
+					}
+					
+					$sql = $query_builder->build_sql_query($settings, true, $page, $per_page);
+					error_log('SQL built: ' . $sql);
+					
+					if (!method_exists($query_builder, 'execute_query')) {
+						error_log('execute_query method not found');
+						throw new Exception('Required method not found: execute_query');
+					}
+					
+					$results = $query_builder->execute_query($sql);
+					error_log('Query executed, found ' . count($results) . ' results');
+				}
+				
+				// Generate HTML output
+				error_log('Generating HTML output');
+				$html = $this->generate_results_html($results, $page, $per_page, $total_count);
+				
+				// Send response
+				error_log('Sending success response');
+				wp_send_json_success(array(
+					'html' => $html,
+					'count' => $total_count,
+					'page' => $page,
+					'per_page' => $per_page
+				));
+				
+			} catch (Exception $e) {
+				error_log('Error in query execution: ' . $e->getMessage());
+				wp_send_json_error(array('message' => $e->getMessage()));
+			}
 		} catch (Exception $e) {
+			error_log('Exception in ajax_load_user_query: ' . $e->getMessage());
+			wp_send_json_error(array('message' => $e->getMessage()));
+		} catch (Error $e) {
+			error_log('PHP Error in ajax_load_user_query: ' . $e->getMessage());
 			wp_send_json_error(array('message' => $e->getMessage()));
 		}
 	}
@@ -749,92 +875,148 @@ class CSD_User_Queries {
 		if (empty($results)) {
 			$html = '<div class="notice notice-warning"><p>' . __('No results found.', 'csd-manager') . '</p></div>';
 		} else {
-			$html .= '<div class="csd-results-table-wrapper">';
-			$html .= '<table class="csd-results-table">';
+			// Define excluded columns (fields that should never be displayed)
+			$excluded_columns = array(
+				'schools_id', 'schools_date_created', 'schools_date_updated',
+				'staff_id', 'staff_date_created', 'staff_date_updated',
+				'school_staff_id', 'school_staff_school_id', 'school_staff_staff_id', 'school_staff_date_created'
+			);
 			
-			// Table headers
-			$html .= '<thead><tr>';
-			foreach (array_keys($results[0]) as $column) {
-				$label = $column;
-				
-				// Try to make the column header more readable
-				$label = str_replace('_', ' ', $label);
-				$label = ucwords($label);
-				
-				$html .= '<th>' . esc_html($label) . '</th>';
-			}
-			$html .= '</tr></thead>';
+			// Define column name mapping for better display
+			$column_mapping = array(
+				'schools_school_name' => 'School Name',
+				'schools_street_address_line_1' => 'Address Line 1',
+				'schools_street_address_line_2' => 'Address Line 2',
+				'schools_street_address_line_3' => 'Address Line 3',
+				'schools_city' => 'City',
+				'schools_state' => 'State',
+				'schools_zipcode' => 'Zipcode',
+				'schools_country' => 'Country',
+				'schools_county' => 'County',
+				'schools_school_divisions' => 'Divisions',
+				'schools_school_conferences' => 'Conferences',
+				'schools_school_level' => 'School Level',
+				'schools_school_type' => 'School Type',
+				'schools_school_enrollment' => 'Estimated Enrollment',
+				'schools_mascot' => 'Nickname/Mascot',
+				'schools_school_colors' => 'School Colors',
+				'schools_school_website' => 'School Website',
+				'schools_athletics_website' => 'Athletics Website',
+				'schools_athletics_phone' => 'Athletics Phone',
+				'schools_football_division' => 'Football Division',
+				'staff_full_name' => 'Full Name',
+				'staff_title' => 'Title',
+				'staff_sport_department' => 'Sport/Department',
+				'staff_email' => 'Email',
+				'staff_phone' => 'Phone'
+			);
 			
-			// Table body
-			$html .= '<tbody>';
+			// Filter results to remove excluded columns
+			$filtered_results = array();
 			foreach ($results as $row) {
-				$html .= '<tr>';
+				$filtered_row = array();
 				foreach ($row as $key => $value) {
-					// Format the value for display
-					$display_value = $this->format_value_for_display($key, $value);
-					$html .= '<td>' . $display_value . '</td>';
+					if (!in_array($key, $excluded_columns)) {
+						$filtered_row[$key] = $value;
+					}
 				}
-				$html .= '</tr>';
+				$filtered_results[] = $filtered_row;
 			}
-			$html .= '</tbody>';
-			$html .= '</table>';
-			$html .= '</div>';
 			
-			// Add pagination controls
-			$total_pages = ceil($total_count / $per_page);
-			if ($total_pages > 1) {
-				$html .= '<div class="csd-pagination">';
+			// Only proceed if there are columns to display after filtering
+			if (!empty($filtered_results) && !empty($filtered_results[0])) {
+				$html .= '<div class="csd-results-table-wrapper">';
+				$html .= '<table class="csd-results-table">';
 				
-				// Showing records info
-				$start = (($current_page - 1) * $per_page) + 1;
-				$end = min($start + count($results) - 1, $total_count);
+				// Table headers
+				$html .= '<thead><tr>';
+				foreach (array_keys($filtered_results[0]) as $column) {
+					// Use the mapped column name if available, otherwise format the original
+					if (isset($column_mapping[$column])) {
+						$label = $column_mapping[$column];
+					} else {
+						// Try to make the column header more readable
+						$label = str_replace('_', ' ', $column);
+						$label = ucwords($label);
+					}
+					
+					$html .= '<th>' . esc_html($label) . '</th>';
+				}
+				$html .= '</tr></thead>';
 				
-				$html .= '<div class="csd-pagination-counts">';
-				$html .= '<span class="csd-showing-records">' . sprintf(__('Showing %d to %d of %d records', 'csd-manager'), $start, $end, $total_count) . '</span>';
+				// Table body
+				$html .= '<tbody>';
+				foreach ($filtered_results as $row) {
+					$html .= '<tr>';
+					foreach ($row as $key => $value) {
+						// Format the value for display with appropriate CSS classes
+						$display_value = $this->format_value_for_display($key, $value);
+						$html .= '<td>' . $display_value . '</td>';
+					}
+					$html .= '</tr>';
+				}
+				$html .= '</tbody>';
+				$html .= '</table>';
 				$html .= '</div>';
 				
-				// Page links
-				$html .= '<div class="csd-pagination-links">';
-				
-				// Previous button
-				if ($current_page > 1) {
-					$html .= '<a href="#" class="csd-page-number" data-page="' . ($current_page - 1) . '">&laquo; ' . __('Previous', 'csd-manager') . '</a> ';
-				}
-				
-				// Page numbers
-				$start_page = max(1, $current_page - 2);
-				$end_page = min($total_pages, $start_page + 4);
-				
-				if ($start_page > 1) {
-					$html .= '<a href="#" class="csd-page-number" data-page="1">1</a> ';
-					if ($start_page > 2) {
-						$html .= '<span class="csd-pagination-dots">...</span> ';
+				// Add pagination controls
+				$total_pages = ceil($total_count / $per_page);
+				if ($total_pages > 1) {
+					$html .= '<div class="csd-pagination">';
+					
+					// Showing records info
+					$start = (($current_page - 1) * $per_page) + 1;
+					$end = min($start + count($results) - 1, $total_count);
+					
+					$html .= '<div class="csd-pagination-counts">';
+					$html .= '<span class="csd-showing-records">' . sprintf(__('Showing %d to %d of %d records', 'csd-manager'), $start, $end, $total_count) . '</span>';
+					$html .= '</div>';
+					
+					// Page links
+					$html .= '<div class="csd-pagination-links">';
+					
+					// Previous button
+					if ($current_page > 1) {
+						$html .= '<a href="#" class="csd-page-number" data-page="' . ($current_page - 1) . '">&laquo; ' . __('Previous', 'csd-manager') . '</a> ';
 					}
-				}
-				
-				for ($i = $start_page; $i <= $end_page; $i++) {
-					if ($i === $current_page) {
-						$html .= '<span class="csd-page-number current">' . $i . '</span> ';
-					} else {
-						$html .= '<a href="#" class="csd-page-number" data-page="' . $i . '">' . $i . '</a> ';
+					
+					// Page numbers
+					$start_page = max(1, $current_page - 2);
+					$end_page = min($total_pages, $start_page + 4);
+					
+					if ($start_page > 1) {
+						$html .= '<a href="#" class="csd-page-number" data-page="1">1</a> ';
+						if ($start_page > 2) {
+							$html .= '<span class="csd-pagination-dots">...</span> ';
+						}
 					}
-				}
-				
-				if ($end_page < $total_pages) {
-					if ($end_page < $total_pages - 1) {
-						$html .= '<span class="csd-pagination-dots">...</span> ';
+					
+					for ($i = $start_page; $i <= $end_page; $i++) {
+						if ($i === $current_page) {
+							$html .= '<span class="csd-page-number current">' . $i . '</span> ';
+						} else {
+							$html .= '<a href="#" class="csd-page-number" data-page="' . $i . '">' . $i . '</a> ';
+						}
 					}
-					$html .= '<a href="#" class="csd-page-number" data-page="' . $total_pages . '">' . $total_pages . '</a> ';
+					
+					if ($end_page < $total_pages) {
+						if ($end_page < $total_pages - 1) {
+							$html .= '<span class="csd-pagination-dots">...</span> ';
+						}
+						$html .= '<a href="#" class="csd-page-number" data-page="' . $total_pages . '">' . $total_pages . '</a> ';
+					}
+					
+					// Next button
+					if ($current_page < $total_pages) {
+						$html .= '<a href="#" class="csd-page-number" data-page="' . ($current_page + 1) . '">' . __('Next', 'csd-manager') . ' &raquo;</a>';
+					}
+					
+					$html .= '</div>'; // End pagination links
+					
+					$html .= '</div>'; // End pagination container
 				}
-				
-				// Next button
-				if ($current_page < $total_pages) {
-					$html .= '<a href="#" class="csd-page-number" data-page="' . ($current_page + 1) . '">' . __('Next', 'csd-manager') . ' &raquo;</a>';
-				}
-				
-				$html .= '</div>'; // End pagination links
-				
-				$html .= '</div>'; // End pagination container
+			} else {
+				$html = '<div class="notice notice-warning"><p>' . __('No displayable columns found after filtering.', 'csd-manager') . '</p></div>';
 			}
 		}
 		
@@ -851,18 +1033,18 @@ class CSD_User_Queries {
 	private function format_value_for_display($key, $value) {
 		// Handle null/empty values
 		if ($value === null || $value === '') {
-			return '&mdash;';
+			return '<span class="csd-empty-value">&mdash;</span>';
 		}
 		
 		// Format dates
 		if (strpos($key, 'date_') !== false && preg_match('/^\d{4}-\d{2}-\d{2}/', $value)) {
-			return date_i18n(get_option('date_format') . ' ' . get_option('time_format'), strtotime($value));
+			return '<span class="csd-date">' . date_i18n(get_option('date_format') . ' ' . get_option('time_format'), strtotime($value)) . '</span>';
 		}
 		
 		// Format URLs
 		if (strpos($key, 'website') !== false || strpos($key, 'url') !== false) {
 			if (filter_var($value, FILTER_VALIDATE_URL)) {
-				return '<a href="' . esc_url($value) . '" target="_blank">' . esc_html($value) . '</a>';
+				return '<a href="' . esc_url($value) . '" target="_blank" class="csd-url">' . esc_html($value) . '</a>';
 			}
 		}
 		
@@ -870,15 +1052,340 @@ class CSD_User_Queries {
 		if (strpos($key, 'email') !== false) {
 			// Check if the email contains @placeholder and return blank if true
 			if (strpos($value, '@placeholder') !== false) {
-				return '&mdash;';
+				return '<span class="csd-empty-value">&mdash;</span>';
 			}
 			
 			if (filter_var($value, FILTER_VALIDATE_EMAIL)) {
-				return '<a href="mailto:' . esc_attr($value) . '">' . esc_html($value) . '</a>';
+				return '<a href="mailto:' . esc_attr($value) . '" class="csd-email">' . esc_html($value) . '</a>';
 			}
 		}
 		
+		// Format numbers
+		if (is_numeric($value) && strpos($key, 'id') === false) {
+			return '<span class="csd-number">' . number_format($value) . '</span>';
+		}
+		
 		// Default formatting
-		return esc_html($value);
+		return '<span class="csd-text">' . esc_html($value) . '</span>';
 	}
 }
+
+/**
+ * Add specific styles for user query results
+ */
+function csd_add_user_query_styles() {
+	// Only load on pages with our shortcode
+	global $post;
+	if (is_a($post, 'WP_Post') && 
+		(has_shortcode($post->post_content, 'csd_user_queries') || 
+		 has_shortcode($post->post_content, 'csd_user_query'))) {
+		
+		wp_enqueue_style('csd-user-queries-styles');
+		
+		// Add additional inline styles
+		$custom_css = "
+			/* Query results container */
+			.csd-user-query-container {
+				margin-bottom: 40px;
+				font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
+			}
+			
+			/* Navigation and controls */
+			.csd-query-back {
+				margin-bottom: 20px;
+			}
+			
+			.csd-query-back a {
+				display: inline-block;
+				padding: 8px 12px;
+				background-color: #f8f8f8;
+				border: 1px solid #ddd;
+				border-radius: 4px;
+				text-decoration: none;
+				color: #333;
+				font-weight: 500;
+				transition: all 0.2s ease;
+			}
+			
+			.csd-query-back a:hover {
+				background-color: #f0f0f0;
+				border-color: #ccc;
+			}
+			
+			.csd-query-header {
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				margin-bottom: 20px;
+				flex-wrap: wrap;
+			}
+			
+			.csd-query-title {
+				margin: 0 0 10px 0;
+				font-size: 1.8em;
+				color: #333;
+				flex: 1 0 100%;
+			}
+			
+			/* Table styles */
+			.csd-results-table-wrapper {
+				overflow-x: auto;
+				width: 100%;
+				margin-bottom: 20px;
+				background: #fff;
+				border: 1px solid #e0e0e0;
+				border-radius: 6px;
+				box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+			}
+			
+			.csd-results-table {
+				width: 100%;
+				border-collapse: collapse;
+				min-width: 650px; /* Ensures mobile scrolling for better readability */
+			}
+			
+			.csd-results-table th {
+				background-color: #f8f8f8;
+				padding: 12px 15px;
+				text-align: left;
+				font-weight: 600;
+				color: #333;
+				border-bottom: 2px solid #e0e0e0;
+				position: sticky;
+				top: 0;
+				z-index: 10;
+				white-space: nowrap;
+			}
+			
+			.csd-results-table td {
+				padding: 10px 15px;
+				border-bottom: 1px solid #e0e0e0;
+				color: #555;
+				max-width: 300px;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+			
+			.csd-results-table tr:last-child td {
+				border-bottom: none;
+			}
+			
+			.csd-results-table tr:nth-child(even) {
+				background-color: #f9f9f9;
+			}
+			
+			.csd-results-table tr:hover {
+				background-color: #f5f5f5;
+			}
+			
+			/* Make cells expand on hover for better readability */
+			.csd-results-table td:hover {
+				white-space: normal;
+				max-width: none;
+				background-color: #f0f0f0;
+				position: relative;
+				z-index: 5;
+				box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+				transition: all 0.2s ease;
+			}
+			
+			/* Format specific data types */
+			.csd-email {
+				text-decoration: none;
+				color: #0073aa;
+			}
+			
+			.csd-email:hover {
+				text-decoration: underline;
+			}
+			
+			.csd-date {
+				white-space: nowrap;
+				color: #666;
+			}
+			
+			/* Pagination controls */
+			.csd-pagination {
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				margin: 20px 0;
+				flex-wrap: wrap;
+				gap: 15px;
+			}
+			
+			.csd-pagination-counts {
+				color: #666;
+				font-size: 0.9em;
+			}
+			
+			.csd-pagination-links {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 5px;
+			}
+			
+			.csd-page-number {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				min-width: 32px;
+				height: 32px;
+				padding: 0 10px;
+				background: #fff;
+				border: 1px solid #ddd;
+				border-radius: 4px;
+				text-decoration: none;
+				color: #333;
+				font-weight: 500;
+				transition: all 0.2s ease;
+			}
+			
+			.csd-page-number.current {
+				background: #0073aa;
+				border-color: #0073aa;
+				color: #fff;
+			}
+			
+			.csd-page-number:hover:not(.current) {
+				background: #f0f0f0;
+				border-color: #ccc;
+			}
+			
+			.csd-per-page-selector {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+			
+			.csd-per-page-selector label {
+				font-size: 0.9em;
+				color: #666;
+			}
+			
+			#csd-per-page {
+				padding: 6px 10px;
+				border: 1px solid #ddd;
+				border-radius: 4px;
+				background: #fff;
+			}
+			
+			/* Notice styling */
+			.notice {
+				padding: 10px 15px;
+				border-radius: 4px;
+				margin-bottom: 20px;
+			}
+			
+			.notice-success {
+				background-color: #f0f9e8;
+				border-left: 4px solid #7ad03a;
+				color: #3c763d;
+			}
+			
+			.notice-error {
+				background-color: #fbeaea;
+				border-left: 4px solid #dc3232;
+				color: #a94442;
+			}
+			
+			.notice p {
+				margin: 0.5em 0;
+			}
+			
+			/* Loading indicator */
+			.csd-loading {
+				text-align: center;
+				padding: 20px;
+				color: #666;
+				font-style: italic;
+			}
+			
+			/* User queries list styling */
+			.csd-user-queries {
+				margin-bottom: 40px;
+			}
+			
+			.csd-query-list {
+				list-style: none;
+				padding: 0;
+				margin: 0;
+			}
+			
+			.csd-query-list li {
+				padding: 15px;
+				border: 1px solid #e0e0e0;
+				border-radius: 6px;
+				margin-bottom: 10px;
+				background: #fff;
+				box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				flex-wrap: wrap;
+				transition: all 0.2s ease;
+			}
+			
+			.csd-query-list li:hover {
+				background: #f8f8f8;
+				box-shadow: 0 3px 6px rgba(0,0,0,0.1);
+				transform: translateY(-2px);
+			}
+			
+			.csd-query-list a {
+				color: #0073aa;
+				font-weight: 600;
+				text-decoration: none;
+				font-size: 1.1em;
+				transition: color 0.2s ease;
+			}
+			
+			.csd-query-list a:hover {
+				color: #00a0d2;
+				text-decoration: underline;
+			}
+			
+			.csd-query-date {
+				color: #666;
+				font-size: 0.9em;
+				font-style: italic;
+			}
+			
+			/* Responsive adjustments */
+			@media screen and (max-width: 782px) {
+				.csd-query-header {
+					flex-direction: column;
+					align-items: flex-start;
+				}
+				
+				.csd-pagination {
+					flex-direction: column;
+					align-items: flex-start;
+				}
+				
+				.csd-per-page-selector {
+					margin-top: 10px;
+				}
+				
+				.csd-query-list li {
+					padding: 12px;
+				}
+				
+				.csd-query-list a {
+					margin-bottom: 5px;
+					display: block;
+					width: 100%;
+				}
+				
+				.csd-query-date {
+					display: block;
+					width: 100%;
+				}
+			}
+		";
+		
+		wp_add_inline_style('csd-user-queries-styles', $custom_css);
+	}
+}
+add_action('wp_enqueue_scripts', 'csd_add_user_query_styles', 99);
