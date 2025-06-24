@@ -6,11 +6,127 @@
 
 	// Initialize everything when the document is ready
 	$(document).ready(function() {
+		
+		// Function to create a clean condition group template
+		function createConditionGroupTemplate(groupIndex, operator) {
+			var operatorText = groupIndex === 0 ? '' : ' (' + operator + ')';
+			var groupOperatorInput = groupIndex > 0 ? '<input type="hidden" name="group_operators[' + groupIndex + ']" value="' + operator + '" class="csd-group-operator">' : '';
+			
+			var templateHtml = `
+				<div class="csd-condition-group" data-group="${groupIndex}">
+					<div class="csd-condition-group-header">
+						<h4>Condition Group ${groupIndex + 1}${operatorText}</h4>
+						<button type="button" class="csd-remove-group button" style="${groupIndex === 0 ? 'display:none;' : ''}">Remove Group</button>
+					</div>
+					
+					<div class="csd-conditions">
+						<div class="csd-condition" data-index="0">
+							<select class="csd-condition-field" name="conditions[${groupIndex}][0][field]">
+								<option value="">-- Select Field --</option>
+								<optgroup label="Schools">
+									<option value="schools.id">ID</option>
+									<option value="schools.school_name">School Name</option>
+									<option value="schools.street_address_line_1">Address Line 1</option>
+									<option value="schools.street_address_line_2">Address Line 2</option>
+									<option value="schools.street_address_line_3">Address Line 3</option>
+									<option value="schools.city">City</option>
+									<option value="schools.state">State</option>
+									<option value="schools.zipcode">Zip Code</option>
+									<option value="schools.country">Country</option>
+									<option value="schools.county">County</option>
+									<option value="schools.school_divisions">School Divisions</option>
+									<option value="schools.school_conferences">School Conferences</option>
+									<option value="schools.school_level">School Level</option>
+									<option value="schools.school_type">School Type</option>
+									<option value="schools.school_enrollment">School Enrollment</option>
+									<option value="schools.mascot">Mascot</option>
+									<option value="schools.school_colors">School Colors</option>
+									<option value="schools.school_website">School Website</option>
+									<option value="schools.athletics_website">Athletics Website</option>
+									<option value="schools.athletics_phone">Athletics Phone</option>
+									<option value="schools.football_division">Football Division</option>
+									<option value="schools.date_created">Date Created</option>
+									<option value="schools.date_updated">Date Updated</option>
+								</optgroup>
+								<optgroup label="Staff">
+									<option value="staff.id">ID</option>
+									<option value="staff.full_name">Full Name</option>
+									<option value="staff.title">Title</option>
+									<option value="staff.sport_department">Sport/Department</option>
+									<option value="staff.email">Email</option>
+									<option value="staff.phone">Phone</option>
+									<option value="staff.date_created">Date Created</option>
+									<option value="staff.date_updated">Date Updated</option>
+								</optgroup>
+								<optgroup label="School Staff Relations">
+									<option value="school_staff.id">ID</option>
+									<option value="school_staff.school_id">School ID</option>
+									<option value="school_staff.staff_id">Staff ID</option>
+									<option value="school_staff.date_created">Date Created</option>
+								</optgroup>
+							</select>
+							
+							<select class="csd-condition-operator" name="conditions[${groupIndex}][0][operator]">
+								<option value="">-- Select Operator --</option>
+								<option value="=">=</option>
+								<option value="!=">!=</option>
+								<option value="LIKE">LIKE</option>
+								<option value="LIKE %...%">LIKE %...% (contains)</option>
+								<option value="NOT LIKE">NOT LIKE</option>
+								<option value="NOT LIKE %...%">NOT LIKE %...% (not contains)</option>
+								<option value="REGEXP">REGEXP</option>
+								<option value="REGEXP ^...$">REGEXP ^...$ (exact match)</option>
+								<option value="NOT REGEXP">NOT REGEXP</option>
+								<option value="= ''">= '' (empty)</option>
+								<option value="!= ''">!= '' (not empty)</option>
+								<option value="IN">IN (...)</option>
+								<option value="NOT IN">NOT IN (...)</option>
+								<option value="BETWEEN">BETWEEN</option>
+								<option value="NOT BETWEEN">NOT BETWEEN</option>
+								<option value=">">></option>
+								<option value=">=">>=</option>
+								<option value="<"><</option>
+								<option value="<="><=</option>
+							</select>
+							
+							<div class="csd-condition-value-container">
+								<input type="text" class="csd-condition-value" name="conditions[${groupIndex}][0][value]" placeholder="Enter value">
+								
+								<div class="csd-between-values" style="display:none;">
+									<input type="text" class="csd-condition-value-2" name="conditions[${groupIndex}][0][value2]" placeholder="End value">
+								</div>
+								
+								<button type="button" class="csd-get-values button" title="Get possible values">
+									<span class="dashicons dashicons-arrow-down"></span>
+								</button>
+							</div>
+							
+							<select class="csd-condition-relation" name="conditions[${groupIndex}][0][relation]" style="display:none;">
+								<option value="AND">AND</option>
+								<option value="OR">OR</option>
+							</select>
+							
+							<button type="button" class="csd-remove-condition button" style="display:none;">
+								<span class="dashicons dashicons-no"></span>
+							</button>
+						</div>
+					</div>
+					
+					<div class="csd-condition-actions">
+						<button type="button" class="csd-add-condition button">Add Condition</button>
+					</div>
+					${groupOperatorInput}
+				</div>
+			`;
+			
+			return $(templateHtml);
+		}
+		
 		var currentPage = 1;
 		var resultsPerPage = 25;
 		
 		// CodeMirror instance variable
-		let sqlEditor = null;
+		window.sqlEditor = null;
 
 		// Create a fallback for the AJAX object if needed
 		if (typeof csd_ajax === 'undefined') {
@@ -24,11 +140,11 @@
 		// Initialize CodeMirror with both auto and manual resizing capabilities
 		function initCodeMirror() {
 		  const sqlTextarea = document.getElementById('csd-sql-query');
-		  if (sqlTextarea && !sqlEditor && typeof CodeMirror !== 'undefined') {
+		  if (sqlTextarea && !window.sqlEditor && typeof CodeMirror !== 'undefined') {
 			// Clear any existing content first
 			sqlTextarea.value = '';
 			
-			sqlEditor = CodeMirror.fromTextArea(sqlTextarea, {
+			window.sqlEditor = CodeMirror.fromTextArea(sqlTextarea, {
 			  mode: 'text/x-mysql',
 			  theme: 'monokai',
 			  lineNumbers: true,
@@ -39,12 +155,12 @@
 			});
 			
 			// Make wrapper resizable
-			const wrapper = sqlEditor.getWrapperElement();
+			const wrapper = window.sqlEditor.getWrapperElement();
 			$(wrapper).addClass('resizable-cm');
 			
 			// Add click handler for edit mode
 			$(wrapper).on('click', function() {
-			  if (sqlEditor.getOption('readOnly')) {
+			  if (window.sqlEditor.getOption('readOnly')) {
 				$('#csd-edit-sql').click();
 			  }
 			});
@@ -53,7 +169,7 @@
 			autoAdjustEditorHeight();
 			
 			// Make sure changes in content trigger height adjustment
-			sqlEditor.on('change', function() {
+			window.sqlEditor.on('change', function() {
 			  autoAdjustEditorHeight();
 			});
 		  }
@@ -61,14 +177,14 @@
 		
 		// Function to adjust editor height based on content
 		function autoAdjustEditorHeight() {
-		  if (!sqlEditor) return;
+		  if (!window.sqlEditor) return;
 		  
 		  // Get the editor wrapper
-		  const wrapper = sqlEditor.getWrapperElement();
+		  const wrapper = window.sqlEditor.getWrapperElement();
 		  
 		  // Get the content's height (accounting for line wrapping)
-		  sqlEditor.refresh(); // Ensure measurements are accurate
-		  const contentHeight = sqlEditor.getScrollInfo().height;
+		  window.sqlEditor.refresh(); // Ensure measurements are accurate
+		  const contentHeight = window.sqlEditor.getScrollInfo().height;
 		  
 		  // Set a minimum height and add some padding
 		  const newHeight = Math.max(100, contentHeight + 20);
@@ -76,13 +192,13 @@
 		  // Only adjust if not manually resized by user
 		  if (!$(wrapper).data('manually-resized')) {
 			$(wrapper).height(newHeight + 'px');
-			sqlEditor.refresh();
+			window.sqlEditor.refresh();
 		  }
 		}
 		
 		// Handler for when user manually resizes the editor
 		function setupManualResize() {
-		  const wrapper = sqlEditor?.getWrapperElement();
+		  const wrapper = window.sqlEditor?.getWrapperElement();
 		  if (!wrapper) return;
 		  
 		  // Track original height before manual resize
@@ -106,7 +222,7 @@
 		
 		// Add this function after initCodeMirror
 		function adjustEditorHeight(sql) {
-		  if (!sqlEditor) return;
+		  if (!window.sqlEditor) return;
 		  
 		  // Count the number of lines in the SQL query
 		  const lines = (sql.match(/\n/g) || []).length + 1;
@@ -115,24 +231,24 @@
 		  const height = Math.max(150, Math.min(400, lines * 20)); 
 		  
 		  // Set the height
-		  $(sqlEditor.getWrapperElement()).height(height);
+		  $(window.sqlEditor.getWrapperElement()).height(height);
 		  
 		  // Refresh the editor
-		  sqlEditor.refresh();
+		  window.sqlEditor.refresh();
 		}
 		
 		// Function to auto-adjust editor height based on content
 		function autoAdjustEditorHeight() {
-		  if (!sqlEditor) return;
+		  if (!window.sqlEditor) return;
 		  
 		  // Get the editor wrapper
-		  const wrapper = sqlEditor.getWrapperElement();
+		  const wrapper = window.sqlEditor.getWrapperElement();
 		  
 		  // Set a reasonable min-height
 		  $(wrapper).css('min-height', '100px');
 		  
 		  // Get the content's height
-		  const contentHeight = sqlEditor.getScrollInfo().height;
+		  const contentHeight = window.sqlEditor.getScrollInfo().height;
 		  
 		  // Calculate new height with some padding
 		  const newHeight = Math.max(100, contentHeight + 20);
@@ -141,7 +257,7 @@
 		  $(wrapper).css('height', newHeight + 'px');
 		  
 		  // Refresh to update the layout
-		  sqlEditor.refresh();
+		  window.sqlEditor.refresh();
 		}
 
 		// Call this after page load with a slight delay to ensure DOM is ready
@@ -174,8 +290,8 @@
 			$('input[name="fields[]"]').prop('checked', false);
 		});
 		
-		// Add condition
-		$('.csd-add-condition').on('click', function() {
+		// Add condition - CHANGED TO DELEGATED EVENT BINDING
+		$(document).on('click', '.csd-add-condition', function() {
 			var group = $(this).closest('.csd-condition-group');
 			var groupIndex = group.data('group');
 			var conditions = group.find('.csd-conditions');
@@ -205,39 +321,35 @@
 			updateRelationVisibility(group);
 		});
 		
-		// Add condition group
-		$('#csd-add-group').on('click', function() {
+		// Add condition group with OR
+		$('#csd-add-group-or').on('click', function() {
+			addConditionGroup('OR');
+		});
+		
+		// Add condition group with AND
+		$('#csd-add-group-and').on('click', function() {
+			addConditionGroup('AND');
+		});
+		
+		// Function to add a condition group with specified operator
+		function addConditionGroup(operator) {
 			var container = $('#csd-conditions-container');
 			var newGroupIndex = container.find('.csd-condition-group').length;
 			
-			// Clone the first group as a template
-			var newGroup = container.find('.csd-condition-group:first').clone();
+			// Create new group using template
+			var newGroup = createConditionGroupTemplate(newGroupIndex, operator);
 			
-			// Update group index and reset conditions
-			newGroup.attr('data-group', newGroupIndex);
-			newGroup.find('h4').text('Condition Group ' + (newGroupIndex + 1));
-			
-			// Clear all conditions except the first one
-			newGroup.find('.csd-condition:not(:first)').remove();
-			
-			// Reset first condition
-			var firstCondition = newGroup.find('.csd-condition:first');
-			firstCondition.attr('data-index', 0);
-			firstCondition.find('.csd-condition-field').attr('name', 'conditions[' + newGroupIndex + '][0][field]').val('');
-			firstCondition.find('.csd-condition-operator').attr('name', 'conditions[' + newGroupIndex + '][0][operator]').val('');
-			firstCondition.find('.csd-condition-value').attr('name', 'conditions[' + newGroupIndex + '][0][value]').val('');
-			firstCondition.find('.csd-condition-value-2').attr('name', 'conditions[' + newGroupIndex + '][0][value2]').val('');
-			firstCondition.find('.csd-condition-relation').attr('name', 'conditions[' + newGroupIndex + '][0][relation]');
-			
-			// Hide BETWEEN second value by default
-			firstCondition.find('.csd-between-values').hide();
-			
-			// Show remove group button for all groups
-			container.find('.csd-remove-group').show();
+			// Show remove group button for all groups if there will be more than one
+			if (newGroupIndex > 0) {
+				container.find('.csd-remove-group').show();
+			}
 			
 			// Add the new group
 			container.append(newGroup);
-		});
+			
+			// Update relation visibility for the new group
+			updateRelationVisibility(newGroup);
+		}
 		
 		// Remove condition
 		$(document).on('click', '.csd-remove-condition', function() {
@@ -409,22 +521,22 @@
 						// Ensure there are no leading newlines
 						cleanSql = cleanSql.replace(/^\n+/, '');
 						
-						if (sqlEditor) {
+						if (window.sqlEditor) {
 							// Reset manual resize flag when setting new content
-							const wrapper = sqlEditor.getWrapperElement();
+							const wrapper = window.sqlEditor.getWrapperElement();
 							$(wrapper).data('manually-resized', false);
 							$(wrapper).data('original-height', null);
 							
 							// Clear editor completely before setting new content
-							sqlEditor.setValue("");
-							sqlEditor.clearHistory();
+							window.sqlEditor.setValue("");
+							window.sqlEditor.clearHistory();
 							
 							// Now set the cleaned SQL
-							sqlEditor.setValue(cleanSql);
-							sqlEditor.refresh();
+							window.sqlEditor.setValue(cleanSql);
+							window.sqlEditor.refresh();
 							
 							// Ensure cursor is at start
-							sqlEditor.setCursor(0, 0);
+							window.sqlEditor.setCursor(0, 0);
 							
 							// Auto-adjust height based on new content
 							autoAdjustEditorHeight();
@@ -481,12 +593,12 @@
 		
 		// Update your edit SQL button handler
 		$('#csd-edit-sql').on('click', function() {
-		  if (sqlEditor) {
-			sqlEditor.setOption('readOnly', false);
+		  if (window.sqlEditor) {
+			window.sqlEditor.setOption('readOnly', false);
 			
 			// Force focus after a slight delay
 			setTimeout(function() {
-			  sqlEditor.focus();
+			  window.sqlEditor.focus();
 			}, 50);
 		  } else {
 			$('#csd-sql-query').prop('readonly', false).focus();
@@ -499,8 +611,8 @@
 		
 		// Cancel SQL edit
 		$('#csd-cancel-sql-edit').on('click', function() {
-			if (sqlEditor) {
-				sqlEditor.setOption('readOnly', true);
+			if (window.sqlEditor) {
+				window.sqlEditor.setOption('readOnly', true);
 			} else {
 				$('#csd-sql-query').prop('readonly', true);
 			}
@@ -513,7 +625,7 @@
 		
 		// Run custom SQL
 		$('#csd-run-sql').on('click', function() {
-			var sql = sqlEditor ? sqlEditor.getValue() : $('#csd-sql-query').val();
+			var sql = window.sqlEditor ? window.sqlEditor.getValue() : $('#csd-sql-query').val();
 			
 			if (!sql) {
 				alert('Please enter an SQL query.');
@@ -551,8 +663,8 @@
 						$('#csd-edit-sql').show();
 						
 						// Make textarea readonly again
-						if (sqlEditor) {
-							sqlEditor.setOption('readOnly', true);
+						if (window.sqlEditor) {
+							window.sqlEditor.setOption('readOnly', true);
 						} else {
 							$('#csd-sql-query').prop('readonly', true);
 						}
@@ -579,35 +691,12 @@
 				$('input[name="fields[]"]').prop('checked', false);
 				
 				// Reset conditions
-				$('#csd-conditions-container').html('');
+				var $conditionsContainer = $('#csd-conditions-container');
+				$conditionsContainer.html('');
 				
-				// Clone the first group template
-				var newGroup = $('.csd-condition-group:first').clone();
-				
-				// Reset the group
-				newGroup.attr('data-group', 0);
-				newGroup.find('h4').text('Condition Group 1');
-				
-				// Reset the first condition
-				var firstCondition = newGroup.find('.csd-condition:first');
-				firstCondition.attr('data-index', 0);
-				firstCondition.find('.csd-condition-field').attr('name', 'conditions[0][0][field]').val('');
-				firstCondition.find('.csd-condition-operator').attr('name', 'conditions[0][0][operator]').val('');
-				firstCondition.find('.csd-condition-value').attr('name', 'conditions[0][0][value]').val('');
-				firstCondition.find('.csd-condition-value-2').attr('name', 'conditions[0][0][value2]').val('');
-				firstCondition.find('.csd-condition-relation').attr('name', 'conditions[0][0][relation]');
-				
-				// Remove any extra conditions
-				newGroup.find('.csd-condition:not(:first)').remove();
-				
-				// Hide remove group button
-				newGroup.find('.csd-remove-group').hide();
-				
-				// Hide remove condition button
-				newGroup.find('.csd-remove-condition').hide();
-				
-				// Add the reset group
-				$('#csd-conditions-container').append(newGroup);
+				// Add the initial group using the template function
+				var initialGroup = createConditionGroupTemplate(0, null);
+				$conditionsContainer.append(initialGroup);
 				
 				// Reset options
 				$('#csd-limit').val('100');
@@ -619,16 +708,16 @@
 				// Clear results
 				$('#csd-record-count').text('0');
 				
-				// In the clear form handler where you reset the SQL editor
-				if (sqlEditor) {
-				  // Reset manual resize flag
-				  const wrapper = sqlEditor.getWrapperElement();
-				  $(wrapper).data('manually-resized', false);
-				  
-				  sqlEditor.setValue('');
-				  autoAdjustEditorHeight();
+				// Reset the SQL editor
+				if (window.sqlEditor) {
+					// Reset manual resize flag
+					const wrapper = window.sqlEditor.getWrapperElement();
+					$(wrapper).data('manually-resized', false);
+					
+					window.sqlEditor.setValue('');
+					autoAdjustEditorHeight();
 				} else {
-				  $('#csd-sql-query').val('');
+					$('#csd-sql-query').val('');
 				}
 				
 				$('#csd-query-results').html('');
@@ -637,7 +726,7 @@
 		
 		// Export to CSV
 		$('#csd-export-csv').on('click', function() {
-			var sql = sqlEditor ? sqlEditor.getValue() : $('#csd-sql-query').val();
+			var sql = window.sqlEditor ? window.sqlEditor.getValue() : $('#csd-sql-query').val();
 			
 			if (!sql) {
 				alert('Please run a query first.');
@@ -942,87 +1031,20 @@
 									}
 								});
 							});
-							
-							// Reattach event handlers to all new elements
-							$('.csd-add-condition').off('click').on('click', function() {
-								var group = $(this).closest('.csd-condition-group');
-								var groupIndex = group.data('group');
-								var conditions = group.find('.csd-conditions');
-								var newIndex = conditions.find('.csd-condition').length;
+						}
+						
+						// Load group operators
+						if (queryData.group_operators) {
+							$.each(queryData.group_operators, function(groupIndex, operator) {
+								var $group = $conditionsContainer.find('.csd-condition-group[data-group="' + groupIndex + '"]');
 								
-								// Clone the first condition as a template
-								var newCondition = conditions.find('.csd-condition:first').clone();
+								// Add hidden input for group operator
+								$group.find('.csd-group-operator').remove(); // Remove any existing
+								$group.append('<input type="hidden" name="group_operators[' + groupIndex + ']" value="' + operator + '" class="csd-group-operator">');
 								
-								// Update names and clear values
-								newCondition.attr('data-index', newIndex);
-								newCondition.find('.csd-condition-field').attr('name', 'conditions[' + groupIndex + '][' + newIndex + '][field]').val('');
-								newCondition.find('.csd-condition-operator').attr('name', 'conditions[' + groupIndex + '][' + newIndex + '][operator]').val('');
-								newCondition.find('.csd-condition-value').attr('name', 'conditions[' + groupIndex + '][' + newIndex + '][value]').val('');
-								newCondition.find('.csd-condition-value-2').attr('name', 'conditions[' + groupIndex + '][' + newIndex + '][value2]').val('');
-								newCondition.find('.csd-condition-relation').attr('name', 'conditions[' + groupIndex + '][' + newIndex + '][relation]');
-								
-								// Show remove button
-								newCondition.find('.csd-remove-condition').show();
-								
-								// Hide BETWEEN second value by default
-								newCondition.find('.csd-between-values').hide();
-								
-								// Add the new condition
-								conditions.append(newCondition);
-								
-								// Update the last condition's relation visibility (hide on the last one)
-								updateRelationVisibility(group);
-							});
-							
-							$('.csd-remove-condition').off('click').on('click', function() {
-								var condition = $(this).closest('.csd-condition');
-								var group = condition.closest('.csd-condition-group');
-								
-								// Only remove if there's more than one condition
-								if (group.find('.csd-condition').length > 1) {
-									condition.remove();
-									
-									// Update all remaining conditions in this group
-									updateConditionIndices(group);
-									
-									// Update relation visibility
-									updateRelationVisibility(group);
-								}
-							});
-							
-							$('.csd-remove-group').off('click').on('click', function() {
-								var group = $(this).closest('.csd-condition-group');
-								var container = $('#csd-conditions-container');
-								
-								// Only remove if there's more than one group
-								if (container.find('.csd-condition-group').length > 1) {
-									group.remove();
-									
-									// Update all remaining groups
-									updateGroupIndices();
-								}
-							});
-							
-							$('.csd-condition-operator').off('change').on('change', function() {
-								var operator = $(this).val();
-								var valueContainer = $(this).closest('.csd-condition').find('.csd-condition-value-container');
-								var valueInput = valueContainer.find('.csd-condition-value');
-								var betweenValues = valueContainer.find('.csd-between-values');
-								
-								// Reset
-								valueInput.show();
-								betweenValues.hide();
-								
-								// Handle different operator types
-								if (operator === "= ''" || operator === "!= ''") {
-									valueInput.hide();
-								} else if (operator === 'BETWEEN' || operator === 'NOT BETWEEN') {
-									betweenValues.show();
-								} else if (operator === 'IN' || operator === 'NOT IN') {
-									valueInput.attr('placeholder', 'Enter values separated by commas');
-								} else {
-									valueInput.attr('placeholder', 'Enter value');
-								}
+								// Update header text
+								var operatorText = groupIndex === 0 ? '' : ' (' + operator + ')';
+								$group.find('h4').text('Condition Group ' + (groupIndex + 1) + operatorText);
 							});
 						}
 						
@@ -1178,7 +1200,15 @@
 		function updateGroupIndices() {
 			$('.csd-condition-group').each(function(groupIndex) {
 				$(this).attr('data-group', groupIndex);
-				$(this).find('h4').text('Condition Group ' + (groupIndex + 1));
+				
+				// Get the operator from the hidden input, or default to OR for the first group
+				var operator = $(this).find('.csd-group-operator').val() || (groupIndex === 0 ? '' : 'OR');
+				var operatorText = groupIndex === 0 ? '' : ' (' + operator + ')';
+				
+				$(this).find('h4').text('Condition Group ' + (groupIndex + 1) + operatorText);
+				
+				// Update the hidden input name
+				$(this).find('.csd-group-operator').attr('name', 'group_operators[' + groupIndex + ']');
 				
 				$(this).find('.csd-condition').each(function(condIndex) {
 					$(this).attr('data-index', condIndex);

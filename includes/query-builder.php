@@ -294,7 +294,8 @@ class CSD_Query_Builder {
 							</div>
 							
 							<div class="csd-group-actions">
-								<button type="button" id="csd-add-group" class="button"><?php _e('Add Condition Group (OR)', 'csd-manager'); ?></button>
+								<button type="button" id="csd-add-group-or" class="button"><?php _e('Add Condition Group (OR)', 'csd-manager'); ?></button>
+								<button type="button" id="csd-add-group-and" class="button"><?php _e('Add Condition Group (AND)', 'csd-manager'); ?></button>
 							</div>
 						</div>
 						
@@ -382,6 +383,227 @@ class CSD_Query_Builder {
 					</div>
 				</div>
 			</div>
+			<!-- Klaviyo Sync Modal -->
+			<div id="csd-klaviyo-modal" style="display:none;" class="csd-modal">
+				<div class="csd-modal-content csd-klaviyo-modal-content">
+					<span class="csd-modal-close">&times;</span>
+					<h2><?php _e('Sync to Klaviyo List', 'csd-manager'); ?></h2>
+					
+					<div class="csd-modal-body">
+						<div id="csd-klaviyo-message" class="notice" style="display:none;"></div>
+						
+						<!-- Step 1: List Selection -->
+						<div id="csd-klaviyo-step-1" class="csd-klaviyo-step">
+							<h3><?php _e('Step 1: Select or Create List', 'csd-manager'); ?></h3>
+							
+							<div class="csd-list-selection">
+								<label>
+									<input type="radio" name="list_option" value="existing" checked>
+									<?php _e('Use Existing List', 'csd-manager'); ?>
+								</label>
+								
+								<div id="csd-existing-list-container" style="margin-left: 25px; margin-top: 10px;">
+									<select id="csd-klaviyo-lists" style="width: 100%; max-width: 400px;">
+										<option value=""><?php _e('Loading lists...', 'csd-manager'); ?></option>
+									</select>
+									<button type="button" id="csd-refresh-lists" class="button" style="margin-left: 10px;">
+										<span class="dashicons dashicons-update"></span> <?php _e('Refresh', 'csd-manager'); ?>
+									</button>
+								</div>
+							</div>
+							
+							<div class="csd-list-selection" style="margin-top: 15px;">
+								<label>
+									<input type="radio" name="list_option" value="new">
+									<?php _e('Create New List', 'csd-manager'); ?>
+								</label>
+								
+								<div id="csd-new-list-container" style="margin-left: 25px; margin-top: 10px; display: none;">
+									<input type="text" id="csd-new-list-name" placeholder="<?php _e('Enter new list name...', 'csd-manager'); ?>" style="width: 100%; max-width: 400px;">
+								</div>
+							</div>
+							
+							<div class="csd-step-actions" style="margin-top: 20px;">
+								<button type="button" id="csd-klaviyo-next-step" class="button button-primary"><?php _e('Next: Field Mapping', 'csd-manager'); ?></button>
+								<button type="button" id="csd-klaviyo-cancel" class="button"><?php _e('Cancel', 'csd-manager'); ?></button>
+							</div>
+						</div>
+						
+						<!-- Step 2: Field Mapping -->
+						<div id="csd-klaviyo-step-2" class="csd-klaviyo-step" style="display: none;">
+							<h3><?php _e('Step 2: Map Fields', 'csd-manager'); ?></h3>
+							<p><?php _e('Map your query columns to Klaviyo profile fields. At minimum, you should map an email field.', 'csd-manager'); ?></p>
+							
+							<div style="margin-bottom: 15px;">
+								<button type="button" id="csd-refresh-klaviyo-fields" class="button button-secondary">
+									<span class="dashicons dashicons-update"></span> <?php _e('Refresh Fields from Klaviyo', 'csd-manager'); ?>
+								</button>
+								
+								<button type="button" id="csd-add-custom-field" class="button button-secondary" style="margin-left: 10px;">
+									<span class="dashicons dashicons-plus"></span> <?php _e('Add Custom Field', 'csd-manager'); ?>
+								</button>
+							</div>
+							
+							<!-- Manual custom field addition -->
+							<div id="csd-custom-field-input" style="display: none; margin-bottom: 15px; padding: 10px; background: #f0f0f0; border-radius: 4px;">
+								<label for="csd-manual-field-name"><?php _e('Custom Field Name:', 'csd-manager'); ?></label>
+								<input type="text" id="csd-manual-field-name" placeholder="<?php _e('e.g., school_division, enrollment_count', 'csd-manager'); ?>" style="width: 200px; margin-right: 10px;">
+								<button type="button" id="csd-add-manual-field" class="button button-small"><?php _e('Add Field', 'csd-manager'); ?></button>
+								<button type="button" id="csd-cancel-manual-field" class="button button-small"><?php _e('Cancel', 'csd-manager'); ?></button>
+							</div>
+							
+							<div id="csd-field-mapping-container">
+								<!-- Field mapping will be generated here -->
+							</div>
+							
+							<div class="csd-step-actions" style="margin-top: 20px;">
+								<button type="button" id="csd-klaviyo-back-step" class="button"><?php _e('Back', 'csd-manager'); ?></button>
+								<button type="button" id="csd-klaviyo-start-sync" class="button button-primary"><?php _e('Start Sync', 'csd-manager'); ?></button>
+								<button type="button" id="csd-klaviyo-cancel-mapping" class="button"><?php _e('Cancel', 'csd-manager'); ?></button>
+							</div>
+						</div>
+						
+						<!-- Step 3: Sync Progress -->
+						<div id="csd-klaviyo-step-3" class="csd-klaviyo-step" style="display: none;">
+							<h3><?php _e('Step 3: Syncing Data', 'csd-manager'); ?></h3>
+							<p><?php _e('Please wait while we sync your data to Klaviyo...', 'csd-manager'); ?></p>
+							
+							<div class="csd-progress-container">
+								<div class="csd-progress-bar">
+									<div class="csd-progress-fill" style="width: 0%;"></div>
+								</div>
+								<div class="csd-progress-text">0%</div>
+							</div>
+							
+							<div id="csd-sync-status" style="margin-top: 15px;">
+								<?php _e('Preparing sync...', 'csd-manager'); ?>
+							</div>
+						</div>
+						
+						<!-- Step 4: Completion -->
+						<div id="csd-klaviyo-step-4" class="csd-klaviyo-step" style="display: none;">
+							<h3><?php _e('Sync Complete!', 'csd-manager'); ?></h3>
+							
+							<div id="csd-sync-results">
+								<!-- Results will be populated here -->
+							</div>
+							
+							<div class="csd-step-actions" style="margin-top: 20px;">
+								<button type="button" id="csd-klaviyo-view-list" class="button button-primary" style="display: none;">
+									<?php _e('View List in Klaviyo', 'csd-manager'); ?>
+								</button>
+								<button type="button" id="csd-klaviyo-close" class="button"><?php _e('Close', 'csd-manager'); ?></button>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+			
+			<style type="text/css">
+				/* Klaviyo Modal Styles */
+				.csd-klaviyo-modal-content {
+					max-width: 800px;
+					width: 90%;
+				}
+				
+				.csd-klaviyo-step {
+					min-height: 300px;
+				}
+				
+				.csd-list-selection {
+					margin-bottom: 15px;
+				}
+				
+				.csd-list-selection label {
+					font-weight: 600;
+					display: block;
+					margin-bottom: 5px;
+				}
+				
+				.csd-field-mapping-row {
+					display: flex;
+					align-items: center;
+					margin-bottom: 10px;
+					padding: 10px;
+					background: #f9f9f9;
+					border: 1px solid #ddd;
+					border-radius: 4px;
+				}
+				
+				.csd-field-mapping-row label {
+					flex: 0 0 200px;
+					font-weight: 600;
+					margin-right: 15px;
+				}
+				
+				.csd-field-mapping-row select {
+					flex: 1;
+					max-width: 300px;
+				}
+				
+				.csd-progress-container {
+					margin: 20px 0;
+				}
+				
+				.csd-progress-bar {
+					width: 100%;
+					height: 25px;
+					background-color: #f0f0f0;
+					border-radius: 4px;
+					border: 1px solid #ddd;
+					overflow: hidden;
+					position: relative;
+				}
+				
+				.csd-progress-fill {
+					height: 100%;
+					background: linear-gradient(90deg, #0073aa, #00a0d2);
+					transition: width 0.3s ease;
+					border-radius: 3px;
+				}
+				
+				.csd-progress-text {
+					text-align: center;
+					margin-top: 10px;
+					font-weight: 600;
+					font-size: 16px;
+				}
+				
+				.csd-step-actions {
+					border-top: 1px solid #ddd;
+					padding-top: 15px;
+				}
+				
+				.csd-step-actions .button {
+					margin-right: 10px;
+				}
+				
+				#csd-sync-status {
+					padding: 10px;
+					background: #f8f8f8;
+					border: 1px solid #ddd;
+					border-radius: 4px;
+					font-style: italic;
+				}
+				
+				/* Responsive adjustments */
+				@media screen and (max-width: 768px) {
+					.csd-field-mapping-row {
+						flex-direction: column;
+						align-items: flex-start;
+					}
+					
+					.csd-field-mapping-row label {
+						flex: none;
+						margin-bottom: 5px;
+					}
+					
+					.csd-field-mapping-row select {
+						width: 100%;
+						max-width: none;
+					}
+				}
+			</style>
 		</div>
 		
 		<style type="text/css">
@@ -1159,6 +1381,502 @@ class CSD_Query_Builder {
 			});
 		})(jQuery);
 		</script>
+		<script type="text/javascript">
+		(function($) {
+			// Klaviyo Integration JavaScript
+			var klaviyoCurrentSQL = '';
+			var klaviyoSelectedListId = '';
+			var klaviyoFieldMapping = {};
+		
+			$(document).ready(function() {
+				// Handle Sync to Klaviyo button click
+				$(document).on('click', '#csd-sync-klaviyo', function() {
+					// Get the current SQL query - check if sqlEditor exists and is available
+					klaviyoCurrentSQL = '';
+					
+					if (typeof window.sqlEditor !== 'undefined' && window.sqlEditor && window.sqlEditor.getValue) {
+						klaviyoCurrentSQL = window.sqlEditor.getValue();
+					} else if ($('#csd-sql-query').length) {
+						klaviyoCurrentSQL = $('#csd-sql-query').val();
+					}
+					
+					if (!klaviyoCurrentSQL || klaviyoCurrentSQL.trim() === '') {
+						alert('<?php _e('Please run a query first.', 'csd-manager'); ?>');
+						return;
+					}
+					
+					// Reset modal state
+					resetKlaviyoModal();
+					
+					// Load Klaviyo lists
+					loadKlaviyoLists();
+					
+					// Show the modal
+					$('#csd-klaviyo-modal').show();
+				});
+		
+				// Reset modal to initial state
+				function resetKlaviyoModal() {
+					$('#csd-klaviyo-step-1').show();
+					$('#csd-klaviyo-step-2, #csd-klaviyo-step-3, #csd-klaviyo-step-4').hide();
+					$('#csd-klaviyo-message').hide();
+					$('input[name="list_option"][value="existing"]').prop('checked', true);
+					$('#csd-existing-list-container').show();
+					$('#csd-new-list-container').hide();
+					$('#csd-new-list-name').val('');
+					klaviyoSelectedListId = '';
+					klaviyoFieldMapping = {};
+				}
+		
+				// Load Klaviyo lists
+				function loadKlaviyoLists(forceRefresh = false) {
+					$('#csd-klaviyo-lists').html('<option value=""><?php _e('Loading lists...', 'csd-manager'); ?></option>');
+					$('#csd-refresh-lists').prop('disabled', true).html('<span class="dashicons dashicons-update"></span> <?php _e('Loading...', 'csd-manager'); ?>');
+					
+					$.ajax({
+						url: csd_ajax.ajax_url,
+						type: 'POST',
+						data: {
+							action: 'csd_get_klaviyo_lists',
+							force_refresh: forceRefresh,
+							nonce: '<?php echo wp_create_nonce('csd-klaviyo-nonce'); ?>'
+						},
+						success: function(response) {
+							$('#csd-refresh-lists').prop('disabled', false).html('<span class="dashicons dashicons-update"></span> <?php _e('Refresh', 'csd-manager'); ?>');
+							$('#csd-klaviyo-lists').html('<option value=""><?php _e('-- Select a list --', 'csd-manager'); ?></option>');
+							
+							if (response.success && response.data.lists) {
+								var listCount = response.data.lists.length;
+								
+								$.each(response.data.lists, function(index, list) {
+									$('#csd-klaviyo-lists').append('<option value="' + list.id + '">' + list.name + '</option>');
+								});
+								
+								// Show count and cache status in message
+								var cacheStatus = response.data.cached ? ' <?php _e('(from cache)', 'csd-manager'); ?>' : ' <?php _e('(fresh from Klaviyo)', 'csd-manager'); ?>';
+								showKlaviyoMessage('success', '<?php _e('Loaded', 'csd-manager'); ?> ' + listCount + ' <?php _e('lists', 'csd-manager'); ?>' + cacheStatus);
+							} else {
+								showKlaviyoMessage('error', response.data.message || '<?php _e('Failed to load lists.', 'csd-manager'); ?>');
+							}
+						},
+						error: function() {
+							$('#csd-refresh-lists').prop('disabled', false).html('<span class="dashicons dashicons-update"></span> <?php _e('Refresh', 'csd-manager'); ?>');
+							$('#csd-klaviyo-lists').html('<option value=""><?php _e('Error loading lists', 'csd-manager'); ?></option>');
+							showKlaviyoMessage('error', '<?php _e('Error connecting to Klaviyo.', 'csd-manager'); ?>');
+						}
+					});
+				}
+		
+				// Handle list option radio buttons
+				$(document).on('change', 'input[name="list_option"]', function() {
+					if ($(this).val() === 'existing') {
+						$('#csd-existing-list-container').show();
+						$('#csd-new-list-container').hide();
+					} else {
+						$('#csd-existing-list-container').hide();
+						$('#csd-new-list-container').show();
+					}
+				});
+		
+				// Handle refresh lists button - force refresh
+				$(document).on('click', '#csd-refresh-lists', function() {
+					loadKlaviyoLists(true); // Force refresh
+				});
+				
+				// Get Klaviyo fields with caching
+				function getKlaviyoFields(forceRefresh = false) {
+					return $.ajax({
+						url: csd_ajax.ajax_url,
+						type: 'POST',
+						data: {
+							action: 'csd_get_klaviyo_fields',
+							force_refresh: forceRefresh,
+							nonce: '<?php echo wp_create_nonce('csd-klaviyo-nonce'); ?>'
+						}
+					});
+				}
+		
+				// Handle next step button
+				$(document).on('click', '#csd-klaviyo-next-step', function() {
+					var listOption = $('input[name="list_option"]:checked').val();
+					
+					if (listOption === 'existing') {
+						klaviyoSelectedListId = $('#csd-klaviyo-lists').val();
+						if (!klaviyoSelectedListId) {
+							showKlaviyoMessage('error', '<?php _e('Please select a list.', 'csd-manager'); ?>');
+							return;
+						}
+						proceedToFieldMapping();
+					} else {
+						var newListName = $('#csd-new-list-name').val().trim();
+						if (!newListName) {
+							showKlaviyoMessage('error', '<?php _e('Please enter a name for the new list.', 'csd-manager'); ?>');
+							return;
+						}
+						createKlaviyoList(newListName);
+					}
+				});
+		
+				// Create new Klaviyo list
+				function createKlaviyoList(listName) {
+					$('#csd-klaviyo-next-step').prop('disabled', true).text('<?php _e('Creating list...', 'csd-manager'); ?>');
+					
+					$.ajax({
+						url: csd_ajax.ajax_url,
+						type: 'POST',
+						data: {
+							action: 'csd_create_klaviyo_list',
+							list_name: listName,
+							nonce: '<?php echo wp_create_nonce('csd-klaviyo-nonce'); ?>'
+						},
+						success: function(response) {
+							$('#csd-klaviyo-next-step').prop('disabled', false).text('<?php _e('Next: Field Mapping', 'csd-manager'); ?>');
+							
+							if (response.success) {
+								klaviyoSelectedListId = response.data.list.id;
+								showKlaviyoMessage('success', '<?php _e('List created successfully!', 'csd-manager'); ?>');
+								proceedToFieldMapping();
+							} else {
+								showKlaviyoMessage('error', response.data.message || '<?php _e('Failed to create list.', 'csd-manager'); ?>');
+							}
+						},
+						error: function() {
+							$('#csd-klaviyo-next-step').prop('disabled', false).text('<?php _e('Next: Field Mapping', 'csd-manager'); ?>');
+							showKlaviyoMessage('error', '<?php _e('Error creating list.', 'csd-manager'); ?>');
+						}
+					});
+				}
+				
+				// Handle refresh Klaviyo fields button - force refresh
+				$(document).on('click', '#csd-refresh-klaviyo-fields', function() {
+					var button = $(this);
+					button.prop('disabled', true).html('<span class="dashicons dashicons-update"></span> <?php _e('Refreshing...', 'csd-manager'); ?>');
+					
+					getKlaviyoFields(true).done(function(response) {
+						button.prop('disabled', false).html('<span class="dashicons dashicons-update"></span> <?php _e('Refresh Fields from Klaviyo', 'csd-manager'); ?>');
+						
+						if (response.success) {
+							// Get columns again and rebuild interface
+							var columns = [];
+							$('.csd-results-table-wrapper th .th-content').each(function() {
+								var columnName = $(this).text().trim();
+								if (columnName) {
+									columns.push(columnName);
+								}
+							});
+							
+							buildFieldMappingInterface(columns, response.data.fields);
+							showKlaviyoMessage('success', '<?php _e('Fields refreshed from Klaviyo!', 'csd-manager'); ?>');
+						} else {
+							showKlaviyoMessage('error', response.data.message || '<?php _e('Failed to refresh fields.', 'csd-manager'); ?>');
+						}
+					}).fail(function() {
+						button.prop('disabled', false).html('<span class="dashicons dashicons-update"></span> <?php _e('Refresh Fields from Klaviyo', 'csd-manager'); ?>');
+						showKlaviyoMessage('error', '<?php _e('Error refreshing fields.', 'csd-manager'); ?>');
+					});
+				});
+		
+				// Proceed to field mapping step
+				function proceedToFieldMapping() {
+					$('#csd-klaviyo-step-1').hide();
+					$('#csd-klaviyo-step-2').show();
+					
+					// Generate field mapping interface
+					generateFieldMapping();
+				}
+		
+				// Update the generateFieldMapping function
+				function generateFieldMapping() {
+					// Get the column headers from the current results table
+					var columns = [];
+					$('.csd-results-table-wrapper th .th-content').each(function() {
+						var columnName = $(this).text().trim();
+						if (columnName) {
+							columns.push(columnName);
+						}
+					});
+					
+					if (columns.length === 0) {
+						showKlaviyoMessage('error', '<?php _e('No columns found in query results.', 'csd-manager'); ?>');
+						return;
+					}
+					
+					// Get Klaviyo fields (will use cache if available)
+					getKlaviyoFields(false).done(function(response) {
+						if (response.success) {
+							buildFieldMappingInterface(columns, response.data.fields);
+							
+							// Show cache status
+							if (response.data.cached) {
+								showKlaviyoMessage('info', '<?php _e('Using cached field list. Click "Refresh Fields" to get latest from Klaviyo.', 'csd-manager'); ?>');
+							}
+						} else {
+							showKlaviyoMessage('error', response.data.message || '<?php _e('Failed to load Klaviyo fields.', 'csd-manager'); ?>');
+						}
+					}).fail(function() {
+						showKlaviyoMessage('error', '<?php _e('Error loading Klaviyo fields.', 'csd-manager'); ?>');
+					});
+				}
+		
+				// Build field mapping interface
+				function buildFieldMappingInterface(queryColumns, klaviyoFields) {
+					var html = '';
+					
+					$.each(queryColumns, function(index, column) {
+						html += '<div class="csd-field-mapping-row">';
+						html += '<label>' + column + ':</label>';
+						html += '<select class="csd-field-mapping" data-column="' + column + '">';
+						html += '<option value=""><?php _e('-- Do not map --', 'csd-manager'); ?></option>';
+						
+						$.each(klaviyoFields, function(fieldKey, fieldLabel) {
+							var selected = '';
+							// Auto-select obvious matches
+							if ((column.toLowerCase().includes('email') && fieldKey === 'email') ||
+								(column.toLowerCase().includes('phone') && fieldKey === 'phone_number') ||
+								(column.toLowerCase().includes('first') && column.toLowerCase().includes('name') && fieldKey === 'first_name') ||
+								(column.toLowerCase().includes('last') && column.toLowerCase().includes('name') && fieldKey === 'last_name') ||
+								(column.toLowerCase().includes('city') && fieldKey === 'location.city') ||
+								(column.toLowerCase().includes('state') && fieldKey === 'location.region') ||
+								(column.toLowerCase().includes('zip') && fieldKey === 'location.zip') ||
+								(column.toLowerCase().includes('organization') && fieldKey === 'organization') ||
+								(column.toLowerCase().includes('title') && fieldKey === 'title')) {
+								selected = ' selected';
+							}
+							
+							html += '<option value="' + fieldKey + '"' + selected + '>' + fieldLabel + '</option>';
+						});
+						
+						html += '</select>';
+						html += '</div>';
+					});
+					
+					$('#csd-field-mapping-container').html(html);
+				}
+				
+				// Handle add custom field button
+				$(document).on('click', '#csd-add-custom-field', function() {
+					$('#csd-custom-field-input').show();
+					$('#csd-manual-field-name').focus();
+				});
+				
+				// Handle cancel manual field
+				$(document).on('click', '#csd-cancel-manual-field', function() {
+					$('#csd-custom-field-input').hide();
+					$('#csd-manual-field-name').val('');
+				});
+				
+				// Handle add manual field
+				$(document).on('click', '#csd-add-manual-field', function() {
+					var fieldName = $('#csd-manual-field-name').val().trim();
+					
+					if (!fieldName) {
+						alert('<?php _e('Please enter a field name.', 'csd-manager'); ?>');
+						return;
+					}
+					
+					// Clean the field name
+					fieldName = fieldName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+					
+					var fieldKey = 'properties.' + fieldName;
+					var fieldLabel = 'Manual: ' + $('#csd-manual-field-name').val().trim();
+					
+					// Add to all field mapping dropdowns
+					$('.csd-field-mapping').each(function() {
+						var existingOption = $(this).find('option[value="' + fieldKey + '"]');
+						if (existingOption.length === 0) {
+							$(this).append('<option value="' + fieldKey + '">' + fieldLabel + '</option>');
+						}
+					});
+					
+					$('#csd-custom-field-input').hide();
+					$('#csd-manual-field-name').val('');
+					
+					showKlaviyoMessage('success', '<?php _e('Custom field added to all mapping dropdowns.', 'csd-manager'); ?>');
+				});
+		
+				// Handle back step button
+				$(document).on('click', '#csd-klaviyo-back-step', function() {
+					$('#csd-klaviyo-step-2').hide();
+					$('#csd-klaviyo-step-1').show();
+				});
+		
+				// Handle start sync button
+				$(document).on('click', '#csd-klaviyo-start-sync', function() {
+					// Collect field mapping
+					klaviyoFieldMapping = {};
+					$('.csd-field-mapping').each(function() {
+						var column = $(this).data('column');
+						var klaviyoField = $(this).val();
+						
+						if (klaviyoField) {
+							klaviyoFieldMapping[column] = klaviyoField;
+						}
+					});
+					
+					// Validate that at least email is mapped
+					var hasEmail = false;
+					$.each(klaviyoFieldMapping, function(column, field) {
+						if (field === 'email') {
+							hasEmail = true;
+							return false;
+						}
+					});
+					
+					if (!hasEmail) {
+						showKlaviyoMessage('error', '<?php _e('Please map at least one column to the Email field.', 'csd-manager'); ?>');
+						return;
+					}
+					
+					// Start sync process
+					startKlaviyoSync();
+				});
+		
+				// Start Klaviyo sync
+				function startKlaviyoSync() {
+					$('#csd-klaviyo-step-2').hide();
+					$('#csd-klaviyo-step-3').show();
+					
+					// Reset progress
+					$('.csd-progress-fill').css('width', '0%');
+					$('.csd-progress-text').text('0%');
+					$('#csd-sync-status').text('<?php _e('Starting sync...', 'csd-manager'); ?>');
+					
+					// Start the sync
+					$.ajax({
+						url: csd_ajax.ajax_url,
+						type: 'POST',
+						data: {
+							action: 'csd_sync_to_klaviyo',
+							list_id: klaviyoSelectedListId,
+							field_mapping: klaviyoFieldMapping,
+							sql_query: klaviyoCurrentSQL,
+							nonce: '<?php echo wp_create_nonce('csd-klaviyo-nonce'); ?>'
+						},
+						xhr: function() {
+							var xhr = new window.XMLHttpRequest();
+							// Simulate progress (since we can't get real progress from PHP easily)
+							var progress = 0;
+							var progressInterval = setInterval(function() {
+								if (progress < 90) {
+									progress += Math.random() * 10;
+									$('.csd-progress-fill').css('width', progress + '%');
+									$('.csd-progress-text').text(Math.round(progress) + '%');
+								}
+							}, 500);
+							
+							xhr.addEventListener('loadend', function() {
+								clearInterval(progressInterval);
+							});
+							
+							return xhr;
+						},
+						success: function(response) {
+							// Complete progress
+							$('.csd-progress-fill').css('width', '100%');
+							$('.csd-progress-text').text('100%');
+							
+							if (response.success) {
+								showSyncCompletion(response.data);
+							} else {
+								showSyncError(response.data.message || '<?php _e('Sync failed.', 'csd-manager'); ?>');
+							}
+						},
+						error: function() {
+							showSyncError('<?php _e('Error during sync process.', 'csd-manager'); ?>');
+						}
+					});
+				}
+		
+				// Show sync completion
+				function showSyncCompletion(data) {
+					$('#csd-klaviyo-step-3').hide();
+					$('#csd-klaviyo-step-4').show();
+					
+					var html = '<div class="notice notice-success">';
+					html += '<p><strong>' + data.message + '</strong></p>';
+					
+					if (data.validation_errors && data.validation_errors.length > 0) {
+						html += '<p><strong><?php _e('Validation Issues:', 'csd-manager'); ?></strong></p>';
+						html += '<ul>';
+						$.each(data.validation_errors, function(index, error) {
+							html += '<li>' + error + '</li>';
+						});
+						html += '</ul>';
+						
+						if (data.validation_errors.length >= 10) {
+							html += '<p><em><?php _e('(Only first 10 validation errors shown)', 'csd-manager'); ?></em></p>';
+						}
+					}
+					
+					if (data.processed === 0) {
+						html += '<div class="notice notice-warning" style="margin-top: 10px;">';
+						html += '<p><strong><?php _e('Troubleshooting:', 'csd-manager'); ?></strong></p>';
+						html += '<ul>';
+						html += '<li><?php _e('Check that you have mapped at least one column to the Email field', 'csd-manager'); ?></li>';
+						html += '<li><?php _e('Ensure your data contains valid email addresses', 'csd-manager'); ?></li>';
+						html += '<li><?php _e('Verify that column names in your mapping match the actual query results', 'csd-manager'); ?></li>';
+						html += '</ul>';
+						html += '</div>';
+					}
+					
+					html += '</div>';
+					
+					if (data.list_url && data.processed > 0) {
+						$('#csd-klaviyo-view-list').attr('data-url', data.list_url).show();
+					}
+					
+					$('#csd-sync-results').html(html);
+				}
+		
+				// Show sync error
+				function showSyncError(message) {
+					$('#csd-klaviyo-step-3').hide();
+					$('#csd-klaviyo-step-4').show();
+					
+					var html = '<div class="notice notice-error">';
+					html += '<p><strong><?php _e('Sync Failed:', 'csd-manager'); ?></strong> ' + message + '</p>';
+					html += '</div>';
+					
+					$('#csd-sync-results').html(html);
+				}
+		
+				// Handle view list in Klaviyo button
+				$(document).on('click', '#csd-klaviyo-view-list', function() {
+					var url = $(this).attr('data-url');
+					if (url) {
+						window.open(url, '_blank');
+					}
+				});
+		
+				// Handle modal close buttons
+				$(document).on('click', '#csd-klaviyo-cancel, #csd-klaviyo-cancel-mapping, #csd-klaviyo-close, .csd-modal-close', function() {
+					$('#csd-klaviyo-modal').hide();
+				});
+		
+				// Close modal when clicking outside
+				$(window).on('click', function(event) {
+					if (event.target === $('#csd-klaviyo-modal')[0]) {
+						$('#csd-klaviyo-modal').hide();
+					}
+				});
+		
+				// Show Klaviyo message
+				function showKlaviyoMessage(type, message) {
+					var messageDiv = $('#csd-klaviyo-message');
+					messageDiv.removeClass('notice-success notice-error notice-warning');
+					messageDiv.addClass('notice-' + type);
+					messageDiv.html('<p>' + message + '</p>').show();
+					
+					// Auto-hide success messages after 5 seconds
+					if (type === 'success') {
+						setTimeout(function() {
+							messageDiv.fadeOut();
+						}, 5000);
+					}
+				}
+			});
+		})(jQuery);
+		</script>
 		<?php
 	}
 	
@@ -1316,8 +2034,9 @@ class CSD_Query_Builder {
 		$where_clause = '';
 		if (isset($form_data['conditions']) && is_array($form_data['conditions'])) {
 			$condition_groups = array();
+			$group_operators = isset($form_data['group_operators']) ? $form_data['group_operators'] : array();
 			
-			foreach ($form_data['conditions'] as $group) {
+			foreach ($form_data['conditions'] as $group_index => $group) {
 				if (is_array($group)) {
 					$conditions = array();
 					
@@ -1427,7 +2146,20 @@ class CSD_Query_Builder {
 			}
 			
 			if (!empty($condition_groups)) {
-				$where_clause = 'WHERE ' . implode(' OR ', $condition_groups);
+				// Build the WHERE clause with proper group operators
+				$where_parts = array();
+				for ($i = 0; $i < count($condition_groups); $i++) {
+					if ($i === 0) {
+						// First group, no operator needed
+						$where_parts[] = $condition_groups[$i];
+					} else {
+						// Get the operator for this group (default to OR if not specified)
+						$operator = isset($group_operators[$i]) ? strtoupper($group_operators[$i]) : 'OR';
+						$where_parts[] = ' ' . $operator . ' ' . $condition_groups[$i];
+					}
+				}
+				
+				$where_clause = 'WHERE ' . implode('', $where_parts);
 			}
 		}
 		
@@ -1488,22 +2220,23 @@ class CSD_Query_Builder {
 			// Remove any ORDER BY, LIMIT, and GROUP BY clauses from the count query
 			$count_sql = preg_replace('/\s+ORDER\s+BY\s+.+$/is', '', $count_sql);
 			$count_sql = preg_replace('/\s+LIMIT\s+\d+(?:\s*,\s*\d+)?$/is', '', $count_sql);
+			$count_sql = preg_replace('/\s+LIMIT\s+\d+\s+OFFSET\s+\d+$/is', '', $count_sql);
 			$count_sql = preg_replace('/\s+GROUP\s+BY\s+.+$/is', '', $count_sql);
 			
 			// Get total count
 			$total_count = $this->get_query_count($count_sql);
 			
 			// Add pagination to the query if it doesn't already have LIMIT
-			if (!preg_match('/\s+LIMIT\s+\d+(?:\s*,\s*\d+)?$/i', $sql)) {
+			if (!preg_match('/\s+LIMIT\s+\d+(?:\s*,\s*\d+)?$/i', $sql) && !preg_match('/\s+LIMIT\s+\d+\s+OFFSET\s+\d+$/i', $sql)) {
 				// Ensure there's an ORDER BY clause for consistent pagination
 				if (!preg_match('/\s+ORDER\s+BY\s+/i', $sql)) {
 					// If there's no ORDER BY, add a default one on the first column
 					$sql .= ' ORDER BY 1';
 				}
 				
-				// Add LIMIT/OFFSET
+				// Add LIMIT using the compatible syntax: LIMIT offset, count
 				$offset = ($page - 1) * $per_page;
-				$sql .= ' LIMIT ' . intval($per_page) . ' OFFSET ' . intval($offset);
+				$sql .= ' LIMIT ' . intval($offset) . ', ' . intval($per_page);
 			}
 			
 			// Run the query
@@ -1541,11 +2274,18 @@ class CSD_Query_Builder {
 		// Trim whitespace
 		$sql = trim($sql);
 		
+		// Fix escaped quotes that can come from AJAX or CodeMirror
+		$sql = str_replace("\'", "'", $sql);
+		$sql = str_replace('\"', '"', $sql);
+		
 		// Remove hexadecimal artifacts that might appear in LIKE clauses
 		$sql = preg_replace('/{[0-9a-f]+}/', '%', $sql);
 		
 		// Remove any double %% that might cause issues
 		$sql = str_replace('%%', '%', $sql);
+		
+		// Clean up any potential double escaping issues
+		$sql = stripslashes($sql);
 		
 		return $sql;
 	}
@@ -1642,12 +2382,13 @@ class CSD_Query_Builder {
 		// Combine JOIN clauses
 		$join_clause = implode(' ', $join_clauses);
 		
-		// Create WHERE clause
+		// Create WHERE clause with support for group operators
 		$where_clause = '';
 		if (isset($form_data['conditions']) && is_array($form_data['conditions'])) {
 			$condition_groups = array();
+			$group_operators = isset($form_data['group_operators']) ? $form_data['group_operators'] : array();
 			
-			foreach ($form_data['conditions'] as $group) {
+			foreach ($form_data['conditions'] as $group_index => $group) {
 				if (is_array($group)) {
 					$conditions = array();
 					
@@ -1757,7 +2498,20 @@ class CSD_Query_Builder {
 			}
 			
 			if (!empty($condition_groups)) {
-				$where_clause = 'WHERE ' . implode(' OR ', $condition_groups);
+				// Build the WHERE clause with proper group operators
+				$where_parts = array();
+				for ($i = 0; $i < count($condition_groups); $i++) {
+					if ($i === 0) {
+						// First group, no operator needed
+						$where_parts[] = $condition_groups[$i];
+					} else {
+						// Get the operator for this group (default to OR if not specified)
+						$operator = isset($group_operators[$i]) ? strtoupper($group_operators[$i]) : 'OR';
+						$where_parts[] = ' ' . $operator . ' ' . $condition_groups[$i];
+					}
+				}
+				
+				$where_clause = 'WHERE ' . implode('', $where_parts);
 			}
 		}
 		
@@ -1787,9 +2541,9 @@ class CSD_Query_Builder {
 		
 		// Add pagination if requested
 		if ($add_pagination) {
-			// Add LIMIT and OFFSET for pagination
+			// Add LIMIT using the compatible syntax: LIMIT offset, count
 			$offset = ($page - 1) * $per_page;
-			$sql .= ' LIMIT ' . intval($per_page) . ' OFFSET ' . intval($offset);
+			$sql .= ' LIMIT ' . intval($offset) . ', ' . intval($per_page);
 		} else {
 			// Non-paginated query - use the original limit setting if present
 			if (!empty($form_data['limit'])) {
@@ -1969,6 +2723,16 @@ class CSD_Query_Builder {
 				
 				$html .= '</div>'; // End pagination container
 			}
+			
+			// Add Klaviyo sync section
+			$html .= '<div class="csd-klaviyo-actions" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">';
+			$html .= '<h4>' . __('Klaviyo Integration', 'csd-manager') . '</h4>';
+			$html .= '<p>' . __('Sync these query results to a Klaviyo list for email marketing.', 'csd-manager') . '</p>';
+			$html .= '<button type="button" id="csd-sync-klaviyo" class="button button-secondary">';
+			$html .= '<span class="dashicons dashicons-upload" style="margin-right: 5px;"></span>';
+			$html .= __('Sync to Klaviyo List', 'csd-manager');
+			$html .= '</button>';
+			$html .= '</div>';
 		}
 		
 		return $html;
@@ -2373,19 +3137,17 @@ class CSD_Query_Builder {
 		}
 		
 		try {
-			// Debugging - log the incoming SQL
-			error_log('Original SQL for export: ' . $sql);
+			// Clean the SQL query
+			$sql = $this->clean_sql_query($sql);
+			
+			// Remove any existing LIMIT clauses for export (we want all results)
+			$sql = preg_replace('/\s+LIMIT\s+\d+(?:\s*,\s*\d+)?$/is', '', $sql);
+			$sql = preg_replace('/\s+LIMIT\s+\d+\s+OFFSET\s+\d+$/is', '', $sql);
 			
 			// Get database connection
 			$wpdb = csd_db_connection();
 			
-			// Fix the SQL syntax issues with quoted LIKE values
-			$sql = str_replace("\'", "'", $sql);
-			
-			// For debugging - log the fixed SQL
-			error_log('Fixed SQL for export: ' . $sql);
-			
-			// Execute the query directly without trying to break it down
+			// Execute the query directly
 			$results = $wpdb->get_results($sql, ARRAY_A);
 			
 			// Check for database errors
@@ -2394,17 +3156,9 @@ class CSD_Query_Builder {
 				wp_die('Database error: ' . $wpdb->last_error);
 			}
 			
-			// Debug info about results
-			error_log('Results count: ' . (is_array($results) ? count($results) : 'not an array'));
-			if (is_array($results) && !empty($results)) {
-				error_log('First row keys: ' . print_r(array_keys($results[0]), true));
-			}
-			
 			if (empty($results)) {
 				wp_die(__('No results to export.', 'csd-manager'));
 			}
-			
-			// Don't use output buffering here, it might be interfering
 			
 			// Set filename with timestamp to prevent caching
 			$filename = 'csd-query-export-' . date('Y-m-d-H-i-s') . '.csv';

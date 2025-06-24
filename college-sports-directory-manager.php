@@ -29,6 +29,7 @@ require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/functions.php');
 require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/database-connection.php');
 require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/query-builder.php');
 require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/snapshot-tool.php');
+require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/klaviyo-integration.php');
 
 /**
  * Add this standalone activation function
@@ -241,6 +242,64 @@ function csd_ajax_fetch_snapshot_wrapper() {
 	$snapshot_tool->ajax_fetch_snapshot();
 }
 
+// Klaviyo integration AJAX handlers
+add_action('wp_ajax_csd_test_klaviyo_connection', 'csd_ajax_test_klaviyo_connection_wrapper');
+function csd_ajax_test_klaviyo_connection_wrapper() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/klaviyo-integration.php');
+	$klaviyo = new CSD_Klaviyo_Integration();
+	$klaviyo->ajax_test_connection();
+}
+
+add_action('wp_ajax_csd_get_klaviyo_lists', 'csd_ajax_get_klaviyo_lists_wrapper');
+function csd_ajax_get_klaviyo_lists_wrapper() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/klaviyo-integration.php');
+	$klaviyo = new CSD_Klaviyo_Integration();
+	$klaviyo->ajax_get_lists();
+}
+
+add_action('wp_ajax_csd_create_klaviyo_list', 'csd_ajax_create_klaviyo_list_wrapper');
+function csd_ajax_create_klaviyo_list_wrapper() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/klaviyo-integration.php');
+	$klaviyo = new CSD_Klaviyo_Integration();
+	$klaviyo->ajax_create_list();
+}
+
+add_action('wp_ajax_csd_get_klaviyo_fields', 'csd_ajax_get_klaviyo_fields_wrapper');
+function csd_ajax_get_klaviyo_fields_wrapper() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/klaviyo-integration.php');
+	$klaviyo = new CSD_Klaviyo_Integration();
+	$klaviyo->ajax_get_fields();
+}
+
+add_action('wp_ajax_csd_sync_to_klaviyo', 'csd_ajax_sync_to_klaviyo_wrapper');
+function csd_ajax_sync_to_klaviyo_wrapper() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/klaviyo-integration.php');
+	$klaviyo = new CSD_Klaviyo_Integration();
+	$klaviyo->ajax_sync_to_klaviyo();
+}
+
+add_action('wp_ajax_csd_refresh_klaviyo_fields', 'csd_ajax_refresh_klaviyo_fields_wrapper');
+function csd_ajax_refresh_klaviyo_fields_wrapper() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/klaviyo-integration.php');
+	$klaviyo = new CSD_Klaviyo_Integration();
+	$klaviyo->ajax_refresh_fields();
+}
+
+// Klaviyo cache management AJAX handlers
+add_action('wp_ajax_csd_clear_klaviyo_cache', 'csd_ajax_clear_klaviyo_cache_wrapper');
+function csd_ajax_clear_klaviyo_cache_wrapper() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/klaviyo-integration.php');
+	$klaviyo = new CSD_Klaviyo_Integration();
+	$klaviyo->ajax_clear_klaviyo_cache();
+}
+
+add_action('wp_ajax_csd_get_klaviyo_cache_status', 'csd_ajax_get_klaviyo_cache_status_wrapper');
+function csd_ajax_get_klaviyo_cache_status_wrapper() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/klaviyo-integration.php');
+	$klaviyo = new CSD_Klaviyo_Integration();
+	$klaviyo->ajax_get_cache_status();
+}
+
 // Add these functions to your plugin file:
 function csd_ajax_load_user_query() {
 	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/user-queries.php');
@@ -439,6 +498,9 @@ function csd_manager_init() {
 	// Load the user queries class
 	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/user-queries.php');
 	new CSD_User_Queries();
+	
+	// Initialize Klaviyo integration
+	new CSD_Klaviyo_Integration();
 }
 add_action('plugins_loaded', 'csd_manager_init');
 
