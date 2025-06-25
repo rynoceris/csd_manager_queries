@@ -28,6 +28,10 @@ class CSD_Klaviyo_Integration {
 		add_action('wp_ajax_csd_create_klaviyo_list', array($this, 'ajax_create_list'));
 		add_action('wp_ajax_csd_get_klaviyo_fields', array($this, 'ajax_get_fields'));
 		add_action('wp_ajax_csd_sync_to_klaviyo', array($this, 'ajax_sync_to_klaviyo'));
+		
+		// Add new AJAX handlers for field mapping persistence
+		add_action('wp_ajax_csd_save_field_mapping', array($this, 'ajax_save_field_mapping'));
+		add_action('wp_ajax_csd_get_saved_field_mapping', array($this, 'ajax_get_saved_field_mapping'));
 	}
 	
 	/**
@@ -100,6 +104,13 @@ class CSD_Klaviyo_Integration {
 			<p><?php _e('Test your Klaviyo API connection to make sure your credentials are working properly.', 'csd-manager'); ?></p>
 			<button type="button" id="csd-test-klaviyo" class="button"><?php _e('Test Klaviyo Connection', 'csd-manager'); ?></button>
 			<div id="csd-klaviyo-test-result" style="margin-top: 10px;"></div>
+			
+			<hr>
+			
+			<h2><?php _e('Cache Management', 'csd-manager'); ?></h2>
+			<p><?php _e('Clear cached Klaviyo data if you need to refresh field mappings or lists.', 'csd-manager'); ?></p>
+			<button type="button" id="csd-clear-cache" class="button"><?php _e('Clear Klaviyo Cache', 'csd-manager'); ?></button>
+			<div id="csd-cache-result" style="margin-top: 10px;"></div>
 		</div>
 		
 		<script type="text/javascript">
@@ -131,6 +142,36 @@ class CSD_Klaviyo_Integration {
 						error: function() {
 							button.prop('disabled', false).text('<?php _e('Test Klaviyo Connection', 'csd-manager'); ?>');
 							resultDiv.html('<div class="notice notice-error"><p><?php _e('Error testing connection.', 'csd-manager'); ?></p></div>');
+						}
+					});
+				});
+				
+				$('#csd-clear-cache').on('click', function() {
+					var button = $(this);
+					var resultDiv = $('#csd-cache-result');
+					
+					button.prop('disabled', true).text('<?php _e('Clearing...', 'csd-manager'); ?>');
+					resultDiv.html('');
+					
+					$.ajax({
+						url: ajaxurl,
+						type: 'POST',
+						data: {
+							action: 'csd_clear_klaviyo_cache',
+							nonce: '<?php echo wp_create_nonce('csd-klaviyo-nonce'); ?>'
+						},
+						success: function(response) {
+							button.prop('disabled', false).text('<?php _e('Clear Klaviyo Cache', 'csd-manager'); ?>');
+							
+							if (response.success) {
+								resultDiv.html('<div class="notice notice-success"><p>' + response.data.message + '</p></div>');
+							} else {
+								resultDiv.html('<div class="notice notice-error"><p>' + response.data.message + '</p></div>');
+							}
+						},
+						error: function() {
+							button.prop('disabled', false).text('<?php _e('Clear Klaviyo Cache', 'csd-manager'); ?>');
+							resultDiv.html('<div class="notice notice-error"><p><?php _e('Error clearing cache.', 'csd-manager'); ?></p></div>');
 						}
 					});
 				});
@@ -493,7 +534,7 @@ class CSD_Klaviyo_Integration {
 	}
 	
 	/**
-	 * Get available Klaviyo profile fields
+	 * Get available Klaviyo profile fields - IMPROVED with better caching
 	 */
 	public function ajax_get_fields() {
 		// Check nonce
@@ -556,14 +597,69 @@ class CSD_Klaviyo_Integration {
 		asort($fields);
 		$fields = $email_field + $fields;
 		
-		// Cache the results for 2 hours (custom fields change less frequently than lists)
-		set_transient($cache_key, $fields, 2 * HOUR_IN_SECONDS);
+		// Cache the results for 4 hours (longer cache for better UX)
+		set_transient($cache_key, $fields, 4 * HOUR_IN_SECONDS);
 		update_option($cache_key . '_timestamp', time());
 		
 		wp_send_json_success(array(
 			'fields' => $fields,
 			'cached' => false
 		));
+	}
+	
+	/**
+	 * Save field mapping for reuse
+	 */
+	public function ajax_save_field_mapping() {
+		// Check nonce
+		if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'csd-klaviyo-nonce')) {
+			wp_send_json_error(array('message' => __('Security check failed.', 'csd-manager')));
+			return;
+		}
+		
+		if (!current_user_can('manage_options')) {
+			wp_send_json_error(array('message' => __('You do not have permission to perform this action.', 'csd-manager')));
+			return;
+		}
+		
+		$mapping_name = sanitize_text_field($_POST['mapping_name']);
+		$field_mapping = $_POST['field_mapping'];
+		
+		if (empty($mapping_name) || empty($field_mapping)) {
+			wp_send_json_error(array('message' => __('Mapping name and field mapping are required.', 'csd-manager')));
+			return;
+		}
+		
+		// Get existing mappings
+		$saved_mappings = get_option('csd_klaviyo_field_mappings', array());
+		
+		// Save the new mapping
+		$saved_mappings[$mapping_name] = $field_mapping;
+		
+		// Update the option
+		update_option('csd_klaviyo_field_mappings', $saved_mappings);
+		
+		wp_send_json_success(array('message' => __('Field mapping saved successfully.', 'csd-manager')));
+	}
+	
+	/**
+	 * Get saved field mappings
+	 */
+	public function ajax_get_saved_field_mapping() {
+		// Check nonce
+		if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'csd-klaviyo-nonce')) {
+			wp_send_json_error(array('message' => __('Security check failed.', 'csd-manager')));
+			return;
+		}
+		
+		if (!current_user_can('manage_options')) {
+			wp_send_json_error(array('message' => __('You do not have permission to perform this action.', 'csd-manager')));
+			return;
+		}
+		
+		$saved_mappings = get_option('csd_klaviyo_field_mappings', array());
+		
+		wp_send_json_success(array('mappings' => $saved_mappings));
 	}
 	
 	/**
@@ -952,7 +1048,7 @@ class CSD_Klaviyo_Integration {
 	}
 	
 	/**
-	 * Subscribe emails to marketing using CORRECT Klaviyo API structure
+	 * Subscribe emails to marketing using CORRECT Klaviyo API structure - PROPERLY FIXED
 	 * 
 	 * @param array $emails Array of email addresses
 	 * @param string $list_id The list ID to subscribe to
@@ -960,13 +1056,13 @@ class CSD_Klaviyo_Integration {
 	 */
 	private function subscribe_emails_to_marketing($emails, $list_id) {
 		// Process emails in batches for subscription
-		$batch_size = 100; // Maximum 1000 according to docs, but 100 is safer
+		$batch_size = 100;
 		$total_emails = count($emails);
 		
 		for ($i = 0; $i < $total_emails; $i += $batch_size) {
 			$email_batch = array_slice($emails, $i, $batch_size);
 			
-			// CORRECT structure according to Klaviyo API docs
+			// Build the profiles array according to Klaviyo's exact specification
 			$profiles_data = array();
 			foreach ($email_batch as $email) {
 				$profiles_data[] = array(
@@ -986,12 +1082,13 @@ class CSD_Klaviyo_Integration {
 				);
 			}
 			
+			// CORRECT structure for Klaviyo subscription bulk create job
 			$body = array(
 				'data' => array(
 					'type' => 'profile-subscription-bulk-create-job',
 					'attributes' => array(
 						'custom_source' => 'WordPress CSD Plugin',
-						'historical_import' => true, // Bypass double opt-in
+						'historical_import' => true,
 						'profiles' => $profiles_data
 					),
 					'relationships' => array(
@@ -1005,29 +1102,71 @@ class CSD_Klaviyo_Integration {
 				)
 			);
 			
-			error_log('Klaviyo Sync Debug - Subscription request body: ' . json_encode($body, JSON_PRETTY_PRINT));
+			error_log('Klaviyo Sync Debug - Corrected subscription request: ' . json_encode($body, JSON_PRETTY_PRINT));
 			
-			// Use the subscription bulk create endpoint
 			$result = $this->make_api_request('profile-subscription-bulk-create-jobs/', 'POST', $body);
 			
 			if (is_wp_error($result)) {
 				error_log('Klaviyo subscription batch error: ' . $result->get_error_message());
 				
-				// Fall back to individual subscriptions using the alternative method
-				$this->subscribe_emails_using_individual_jobs($email_batch, $list_id);
+				// If bulk fails, try the simpler approach of just updating existing profiles
+				$this->update_profiles_marketing_consent($email_batch);
 			} else {
 				error_log('Klaviyo Sync Debug - Successfully submitted subscription job for ' . count($email_batch) . ' emails');
 			}
 			
-			// Small delay between batches
-			usleep(500000); // 500ms delay to avoid rate limiting
+			usleep(500000); // 500ms delay
 		}
 		
 		return true;
 	}
 	
 	/**
-	 * Alternative subscription method using individual profile creation with subscription
+	 * Alternative: Update existing profiles with marketing consent
+	 * 
+	 * @param array $emails Array of email addresses
+	 * @return void
+	 */
+	private function update_profiles_marketing_consent($emails) {
+		foreach ($emails as $email) {
+			// Get the profile first
+			$profile = $this->get_profile_by_email($email);
+			
+			if (!is_wp_error($profile) && isset($profile['id'])) {
+				$profile_id = $profile['id'];
+				
+				// Update with marketing consent
+				$body = array(
+					'data' => array(
+						'type' => 'profile',
+						'id' => $profile_id,
+						'attributes' => array(
+							'subscriptions' => array(
+								'email' => array(
+									'marketing' => array(
+										'consent' => 'SUBSCRIBED'
+									)
+								)
+							)
+						)
+					)
+				);
+				
+				$result = $this->make_api_request("profiles/{$profile_id}/", 'PATCH', $body);
+				
+				if (is_wp_error($result)) {
+					error_log('Klaviyo profile consent update error for ' . $email . ': ' . $result->get_error_message());
+				} else {
+					error_log('Klaviyo Sync Debug - Updated marketing consent for: ' . $email);
+				}
+				
+				usleep(100000); // 100ms delay between individual updates
+			}
+		}
+	}
+	
+	/**
+	 * Updated individual subscription method
 	 * 
 	 * @param array $emails Array of email addresses
 	 * @param string $list_id The list ID
@@ -1035,7 +1174,6 @@ class CSD_Klaviyo_Integration {
 	 */
 	private function subscribe_emails_using_individual_jobs($emails, $list_id) {
 		foreach ($emails as $email) {
-			// Create individual subscription job
 			$body = array(
 				'data' => array(
 					'type' => 'profile-subscription-bulk-create-job',
@@ -1079,7 +1217,6 @@ class CSD_Klaviyo_Integration {
 				error_log('Klaviyo Sync Debug - Successfully subscribed individual email: ' . $email);
 			}
 			
-			// Rate limiting delay
 			usleep(200000); // 200ms delay
 		}
 	}
@@ -1237,8 +1374,8 @@ class CSD_Klaviyo_Integration {
 				
 				error_log('Klaviyo Sync Debug - Processing profile batch ' . (floor($i / $batch_size) + 1) . ' with ' . count($batch) . ' profiles');
 				
-				// Use simplified upsert method
-				$batch_results = $this->upsert_profiles_batch_simplified($batch);
+				// Use the existing upsert method (not the simplified one)
+				$batch_results = $this->upsert_profiles_batch($batch);
 				$profile_ids_for_list = array_merge($profile_ids_for_list, $batch_results['profile_ids']);
 				$processed += $batch_results['processed'];
 				$errors += $batch_results['errors'];
@@ -1442,32 +1579,32 @@ class CSD_Klaviyo_Integration {
 					'email' => $email,
 					'subscriptions' => array(
 						'email' => array(
-							'marketing' => array(
-								'consent' => 'SUBSCRIBED',
-								'consented_at' => date('c')
-							)
+						   'marketing' => array(
+							   'consent' => 'SUBSCRIBED',
+							   'consented_at' => date('c')
+						   )
 						)
 					)
 				)
 			)
 		);
-		
+		   
 		$result = $this->make_api_request('profile-subscription-bulk-create-jobs/', 'POST', $body);
-		
+		   
 		if (is_wp_error($result)) {
 			error_log('Klaviyo individual subscription error for ' . $email . ': ' . $result->get_error_message());
 			return false;
 		}
-		
+		   
 		return true;
 	}
-	
+	   
 	/**
-	 * Create profiles individually (fallback method)
-	 * 
-	 * @param array $profiles Array of profile data
-	 * @return array Results with profile_ids, processed count, and errors count
-	 */
+	* Create profiles individually (fallback method)
+	* 
+	* @param array $profiles Array of profile data
+	* @return array Results with profile_ids, processed count, and errors count
+	*/
 	private function create_profiles_individually($profiles) {
 		$profile_ids = array();
 		$processed = 0;
@@ -1508,13 +1645,13 @@ class CSD_Klaviyo_Integration {
 			'errors' => $errors
 		);
 	}
-	
+	   
 	/**
-	 * Create profiles using upsert endpoint (most efficient)
-	 * 
-	 * @param array $profiles Array of profile data
-	 * @return array Results with profile_ids, processed count, and errors count
-	 */
+	* Create profiles using upsert endpoint (most efficient)
+	* 
+	* @param array $profiles Array of profile data
+	* @return array Results with profile_ids, processed count, and errors count
+	*/
 	private function create_profiles_with_upsert($profiles) {
 		$profile_ids = array();
 		$processed = 0;
@@ -1577,13 +1714,13 @@ class CSD_Klaviyo_Integration {
 			'errors' => $errors
 		);
 	}
-	
+	   
 	/**
-	 * Create mapping from display names to actual column names
-	 * 
-	 * @param array $row Sample row from query results
-	 * @return array Mapping of display names to column names
-	 */
+	* Create mapping from display names to actual column names
+	* 
+	* @param array $row Sample row from query results
+	* @return array Mapping of display names to column names
+	*/
 	private function create_display_to_column_mapping($row) {
 		$mapping = array();
 		
@@ -1646,13 +1783,13 @@ class CSD_Klaviyo_Integration {
 		
 		return $mapping;
 	}
-	
+	   
 	/**
-	 * Convert column name to display name
-	 * 
-	 * @param string $column_name Database column name
-	 * @return string Human-readable display name
-	 */
+	* Convert column name to display name
+	* 
+	* @param string $column_name Database column name
+	* @return string Human-readable display name
+	*/
 	private function column_to_display_name($column_name) {
 		// Remove table prefixes and convert to display format
 		$display_name = preg_replace('/^(schools|staff|school_staff)_/', '', $column_name);
@@ -1673,11 +1810,11 @@ class CSD_Klaviyo_Integration {
 	}
 	
 	/**
-	 * Clean SQL query for sync to handle escaped quotes
-	 * 
-	 * @param string $sql The SQL query to clean
-	 * @return string Cleaned SQL query
-	 */
+	* Clean SQL query for sync to handle escaped quotes
+	* 
+	* @param string $sql The SQL query to clean
+	* @return string Cleaned SQL query
+	*/
 	private function clean_sql_for_sync($sql) {
 		// Make sure we have a string
 		if (!is_string($sql)) {

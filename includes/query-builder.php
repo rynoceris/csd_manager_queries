@@ -1390,6 +1390,7 @@ class CSD_Query_Builder {
 			var klaviyoCurrentSQL = '';
 			var klaviyoSelectedListId = '';
 			var klaviyoFieldMapping = {};
+			var klaviyoAvailableFields = {};
 		
 			$(document).ready(function() {
 				// Handle Sync to Klaviyo button click
@@ -1486,7 +1487,7 @@ class CSD_Query_Builder {
 					loadKlaviyoLists(true); // Force refresh
 				});
 				
-				// Get Klaviyo fields with caching
+				// Get Klaviyo fields with improved caching
 				function getKlaviyoFields(forceRefresh = false) {
 					return $.ajax({
 						url: csd_ajax.ajax_url,
@@ -1559,6 +1560,7 @@ class CSD_Query_Builder {
 						button.prop('disabled', false).html('<span class="dashicons dashicons-update"></span> <?php _e('Refresh Fields from Klaviyo', 'csd-manager'); ?>');
 						
 						if (response.success) {
+							klaviyoAvailableFields = response.data.fields;
 							// Get columns again and rebuild interface
 							var columns = extractActualColumnNames();
 							buildFieldMappingInterface(columns, response.data.fields);
@@ -1572,13 +1574,29 @@ class CSD_Query_Builder {
 					});
 				});
 		
-				// Proceed to field mapping step
+				// Proceed to field mapping step with immediate field loading
 				function proceedToFieldMapping() {
 					$('#csd-klaviyo-step-1').hide();
 					$('#csd-klaviyo-step-2').show();
 					
-					// Generate field mapping interface
-					generateFieldMapping();
+					// Show loading message
+					$('#csd-field-mapping-container').html('<p><?php _e('Loading field mapping interface...', 'csd-manager'); ?></p>');
+					
+					// Load fields immediately (from cache if available)
+					getKlaviyoFields(false).done(function(response) {
+						if (response.success) {
+							klaviyoAvailableFields = response.data.fields;
+							generateFieldMapping();
+							
+							if (response.data.cached) {
+								showKlaviyoMessage('info', '<?php _e('Using cached field list. Click "Refresh Fields" to get latest from Klaviyo.', 'csd-manager'); ?>');
+							}
+						} else {
+							showKlaviyoMessage('error', response.data.message || '<?php _e('Failed to load Klaviyo fields.', 'csd-manager'); ?>');
+						}
+					}).fail(function() {
+						showKlaviyoMessage('error', '<?php _e('Error loading Klaviyo fields.', 'csd-manager'); ?>');
+					});
 				}
 		
 				// FIXED: Extract actual column names from query results
@@ -1644,7 +1662,7 @@ class CSD_Query_Builder {
 					return displayToColumnMap[displayName] || null;
 				}
 		
-				// FIXED: Generate field mapping interface using actual column names
+				// Generate field mapping interface
 				function generateFieldMapping() {
 					var columns = extractActualColumnNames();
 					
@@ -1655,25 +1673,29 @@ class CSD_Query_Builder {
 						return;
 					}
 					
-					// Get available Klaviyo fields and build the mapping interface
-					getKlaviyoFields(false).done(function(response) {
-						if (response.success) {
-							buildFieldMappingInterface(columns, response.data.fields);
-							
-							if (response.data.cached) {
-								showKlaviyoMessage('info', 'Using cached field list. Click "Refresh Fields" to get latest from Klaviyo.');
-							}
-						} else {
-							showKlaviyoMessage('error', response.data.message || 'Failed to load Klaviyo fields.');
-						}
-					}).fail(function() {
-						showKlaviyoMessage('error', 'Error loading Klaviyo fields.');
-					});
+					// Build the mapping interface with saved mappings support
+					buildFieldMappingInterface(columns, klaviyoAvailableFields);
+					
+					// Try to load saved mappings
+					loadSavedMappings();
 				}
 				
-				// FIXED: Build field mapping interface using actual column names
+				// IMPROVED: Build field mapping interface with searchable dropdowns
 				function buildFieldMappingInterface(queryColumns, klaviyoFields) {
 					var html = '';
+					
+					// Add saved mappings section
+					html += '<div class="csd-saved-mappings" style="margin-bottom: 20px; padding: 15px; background: #f8f8f8; border: 1px solid #ddd; border-radius: 4px;">';
+					html += '<h4><?php _e('Saved Field Mappings', 'csd-manager'); ?></h4>';
+					html += '<select id="csd-saved-mapping-select" style="width: 250px; margin-right: 10px;">';
+					html += '<option value="">-- <?php _e('Load Saved Mapping', 'csd-manager'); ?> --</option>';
+					html += '</select>';
+					html += '<button type="button" id="csd-load-mapping" class="button"><?php _e('Load', 'csd-manager'); ?></button>';
+					html += '<div style="margin-top: 10px;">';
+					html += '<input type="text" id="csd-mapping-name" placeholder="<?php _e('Enter mapping name...', 'csd-manager'); ?>" style="width: 250px; margin-right: 10px;">';
+					html += '<button type="button" id="csd-save-mapping" class="button"><?php _e('Save Current Mapping', 'csd-manager'); ?></button>';
+					html += '</div>';
+					html += '</div>';
 					
 					// Create a dropdown for each actual database column
 					$.each(queryColumns, function(index, columnName) {
@@ -1684,7 +1706,7 @@ class CSD_Query_Builder {
 						html += '<label>' + displayName + ':</label>';
 						
 						// CRITICAL FIX: Store the actual database column name in data-column
-						html += '<select class="csd-field-mapping" data-column="' + columnName + '">';
+						html += '<select class="csd-field-mapping csd-searchable-select" data-column="' + columnName + '" style="width: 300px;">';
 						html += '<option value="">-- Do not map --</option>';
 						
 						// Add all available Klaviyo fields as options
@@ -1712,7 +1734,189 @@ class CSD_Query_Builder {
 					
 					// Insert the generated HTML into the modal
 					$('#csd-field-mapping-container').html(html);
+					
+					// Initialize searchable selects
+					initializeSearchableSelects();
 				}
+				
+				// Initialize searchable select dropdowns
+				function initializeSearchableSelects() {
+					$('.csd-searchable-select').each(function() {
+						var $select = $(this);
+						var $wrapper = $('<div class="csd-searchable-wrapper" style="position: relative; display: inline-block; width: 300px;"></div>');
+						var $input = $('<input type="text" class="csd-search-input" placeholder="Search fields..." style="width: 100%; padding: 6px; border: 1px solid #ddd;">');
+						var $dropdown = $('<div class="csd-search-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: 200px; overflow-y: auto; background: white; border: 1px solid #ddd; z-index: 1000;"></div>');
+						
+						// Store original options
+						var originalOptions = [];
+						$select.find('option').each(function() {
+							originalOptions.push({
+								value: $(this).val(),
+								text: $(this).text(),
+								selected: $(this).is(':selected')
+							});
+						});
+						
+						// Replace select with searchable input
+						$select.hide();
+						$wrapper.insertAfter($select);
+						$wrapper.append($input).append($dropdown);
+						
+						// Set initial value
+						var selectedOption = $select.find('option:selected');
+						if (selectedOption.length && selectedOption.val()) {
+							$input.val(selectedOption.text());
+						}
+						
+						// Handle input focus/click
+						$input.on('focus click', function() {
+							showDropdownOptions($input, $dropdown, originalOptions, '');
+						});
+						
+						// Handle input typing
+						$input.on('input', function() {
+							var searchTerm = $(this).val().toLowerCase();
+							showDropdownOptions($input, $dropdown, originalOptions, searchTerm);
+						});
+						
+						// Handle dropdown option click
+						$dropdown.on('click', '.csd-dropdown-option', function() {
+							var value = $(this).data('value');
+							var text = $(this).text();
+							
+							$select.val(value);
+							$input.val(value ? text : '');
+							$dropdown.hide();
+						});
+						
+						// Hide dropdown when clicking outside
+						$(document).on('click', function(e) {
+							if (!$wrapper.is(e.target) && $wrapper.has(e.target).length === 0) {
+								$dropdown.hide();
+							}
+						});
+					});
+				}
+				
+				// Show dropdown options with filtering
+				function showDropdownOptions($input, $dropdown, options, searchTerm) {
+					var html = '';
+					var filteredOptions = options.filter(function(option) {
+						return option.text.toLowerCase().includes(searchTerm);
+					});
+					
+					filteredOptions.forEach(function(option) {
+						var activeClass = option.selected ? ' style="background: #e3f2fd;"' : '';
+						html += '<div class="csd-dropdown-option" data-value="' + option.value + '"' + activeClass + ' style="padding: 8px; cursor: pointer; border-bottom: 1px solid #eee;">' + option.text + '</div>';
+					});
+					
+					if (filteredOptions.length === 0) {
+						html = '<div style="padding: 8px; color: #666; font-style: italic;">No matching fields found</div>';
+					}
+					
+					$dropdown.html(html).show();
+				}
+				
+				// Load saved mappings
+				function loadSavedMappings() {
+					$.ajax({
+						url: csd_ajax.ajax_url,
+						type: 'POST',
+						data: {
+							action: 'csd_get_saved_field_mapping',
+							nonce: '<?php echo wp_create_nonce('csd-klaviyo-nonce'); ?>'
+						},
+						success: function(response) {
+							if (response.success && response.data.mappings) {
+								var $select = $('#csd-saved-mapping-select');
+								$select.find('option:not(:first)').remove();
+								
+								$.each(response.data.mappings, function(name, mapping) {
+									$select.append('<option value="' + name + '">' + name + '</option>');
+								});
+							}
+						}
+					});
+				}
+				
+				// Handle load saved mapping
+				$(document).on('click', '#csd-load-mapping', function() {
+					var mappingName = $('#csd-saved-mapping-select').val();
+					if (!mappingName) {
+						alert('<?php _e('Please select a saved mapping.', 'csd-manager'); ?>');
+						return;
+					}
+					
+					$.ajax({
+						url: csd_ajax.ajax_url,
+						type: 'POST',
+						data: {
+							action: 'csd_get_saved_field_mapping',
+							nonce: '<?php echo wp_create_nonce('csd-klaviyo-nonce'); ?>'
+						},
+						success: function(response) {
+							if (response.success && response.data.mappings[mappingName]) {
+								var mapping = response.data.mappings[mappingName];
+								
+								// Apply the mapping
+								$.each(mapping, function(column, field) {
+									var $select = $('.csd-field-mapping[data-column="' + column + '"]');
+									if ($select.length) {
+										$select.val(field);
+										// Update searchable input
+										var $wrapper = $select.next('.csd-searchable-wrapper');
+										if ($wrapper.length) {
+											var $input = $wrapper.find('.csd-search-input');
+											var selectedText = $select.find('option:selected').text();
+											$input.val(selectedText);
+										}
+									}
+								});
+								
+								showKlaviyoMessage('success', '<?php _e('Mapping loaded successfully!', 'csd-manager'); ?>');
+							}
+						}
+					});
+				});
+				
+				// Handle save mapping
+				$(document).on('click', '#csd-save-mapping', function() {
+					var mappingName = $('#csd-mapping-name').val().trim();
+					if (!mappingName) {
+						alert('<?php _e('Please enter a name for this mapping.', 'csd-manager'); ?>');
+						return;
+					}
+					
+					// Collect current mapping
+					var currentMapping = {};
+					$('.csd-field-mapping').each(function() {
+						var column = $(this).attr('data-column');
+						var field = $(this).val();
+						if (field) {
+							currentMapping[column] = field;
+						}
+					});
+					
+					$.ajax({
+						url: csd_ajax.ajax_url,
+						type: 'POST',
+						data: {
+							action: 'csd_save_field_mapping',
+							mapping_name: mappingName,
+							field_mapping: currentMapping,
+							nonce: '<?php echo wp_create_nonce('csd-klaviyo-nonce'); ?>'
+						},
+						success: function(response) {
+							if (response.success) {
+								showKlaviyoMessage('success', response.data.message);
+								$('#csd-mapping-name').val('');
+								loadSavedMappings(); // Refresh the dropdown
+							} else {
+								showKlaviyoMessage('error', response.data.message);
+							}
+						}
+					});
+				});
 				
 				// Helper function to convert database column names to readable display names
 				function formatColumnDisplayName(columnName) {
@@ -1775,6 +1979,9 @@ class CSD_Query_Builder {
 							$(this).append('<option value="' + fieldKey + '">' + fieldLabel + '</option>');
 						}
 					});
+					
+					// Add to available fields for searchable dropdowns
+					klaviyoAvailableFields[fieldKey] = fieldLabel;
 					
 					$('#csd-custom-field-input').hide();
 					$('#csd-manual-field-name').val('');
@@ -1996,7 +2203,7 @@ class CSD_Query_Builder {
 				// Show Klaviyo message
 				function showKlaviyoMessage(type, message) {
 					var messageDiv = $('#csd-klaviyo-message');
-					messageDiv.removeClass('notice-success notice-error notice-warning');
+					messageDiv.removeClass('notice-success notice-error notice-warning notice-info');
 					messageDiv.addClass('notice-' + type);
 					messageDiv.html('<p>' + message + '</p>').show();
 					
