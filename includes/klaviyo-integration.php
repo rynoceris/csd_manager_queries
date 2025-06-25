@@ -1002,7 +1002,29 @@ class CSD_Klaviyo_Integration {
 			
 			error_log('Klaviyo Sync Debug - Total SQL results: ' . count($results));
 			error_log('Klaviyo Sync Debug - First result keys: ' . print_r(array_keys($results[0]), true));
-			error_log('Klaviyo Sync Debug - First result sample: ' . print_r(array_slice($results[0], 0, 3, true), true));
+			error_log('Klaviyo Sync Debug - Field mapping received: ' . print_r($field_mapping, true));
+			
+			// The field mapping should already contain the actual column names since we fixed the JavaScript
+			// But let's add some validation to make sure
+			$validated_field_mapping = array();
+			$available_columns = array_keys($results[0]);
+			
+			foreach ($field_mapping as $column_name => $klaviyo_field) {
+				if (!empty($klaviyo_field)) {
+					if (in_array($column_name, $available_columns)) {
+						$validated_field_mapping[$column_name] = $klaviyo_field;
+					} else {
+						error_log('Klaviyo Sync Debug - Column not found in results: ' . $column_name);
+					}
+				}
+			}
+			
+			error_log('Klaviyo Sync Debug - Validated Field Mapping: ' . print_r($validated_field_mapping, true));
+			
+			if (empty($validated_field_mapping)) {
+				wp_send_json_error(array('message' => __('No valid field mappings found. Please check your column mappings.', 'csd-manager')));
+				return;
+			}
 			
 			// Process results in batches
 			$batch_size = 100;
@@ -1020,9 +1042,9 @@ class CSD_Klaviyo_Integration {
 					$profile_data = array();
 					$has_email = false;
 					
-					error_log('Klaviyo Sync Debug - Processing row ' . ($i + $row_index) . ': ' . print_r($row, true));
+					error_log('Klaviyo Sync Debug - Processing row ' . ($i + $row_index) . ': ' . print_r(array_slice($row, 0, 5, true), true));
 					
-					foreach ($field_mapping as $csv_field => $klaviyo_field) {
+					foreach ($validated_field_mapping as $csv_field => $klaviyo_field) {
 						if (!empty($klaviyo_field)) {
 							// Check if the CSV field exists in the row
 							if (!isset($row[$csv_field])) {
@@ -1032,21 +1054,27 @@ class CSD_Klaviyo_Integration {
 							
 							$value = $row[$csv_field];
 							
+							// Skip completely empty values but allow 0
+							if ($value === null || $value === '') {
+								continue;
+							}
+							
 							// Handle email field specially
 							if ($klaviyo_field === 'email') {
-								if (!empty($value) && filter_var($value, FILTER_VALIDATE_EMAIL)) {
-									$has_email = true;
-									$profile_data['email'] = $value;
+								if (filter_var($value, FILTER_VALIDATE_EMAIL)) {
+									// Additional check for placeholder emails
+									if (strpos($value, '@placeholder') === false) {
+										$has_email = true;
+										$profile_data['email'] = $value;
+									} else {
+										$validation_errors[] = "Row " . ($i + $row_index) . ": Placeholder email '" . $value . "'";
+										continue 2; // Skip this entire row
+									}
 								} else {
 									$validation_errors[] = "Row " . ($i + $row_index) . ": Invalid email '" . $value . "'";
 									continue 2; // Skip this entire row
 								}
 							} else {
-								// Skip empty values for non-email fields
-								if (empty($value) && $value !== '0' && $value !== 0) {
-									continue;
-								}
-								
 								// Handle nested properties
 								if (strpos($klaviyo_field, '.') !== false) {
 									$parts = explode('.', $klaviyo_field, 2);
@@ -1070,10 +1098,7 @@ class CSD_Klaviyo_Integration {
 					
 					// Only add profiles that have a valid email
 					if ($has_email && !empty($profile_data)) {
-						$profiles[] = array(
-							'type' => 'profile',
-							'attributes' => $profile_data
-						);
+						$profiles[] = $profile_data; // Don't wrap in type/attributes structure here
 						error_log('Klaviyo Sync Debug - Added profile to batch: ' . print_r($profile_data, true));
 					} else {
 						$skipped++;
@@ -1084,21 +1109,50 @@ class CSD_Klaviyo_Integration {
 				error_log('Klaviyo Sync Debug - Batch ' . ($i / $batch_size + 1) . ' has ' . count($profiles) . ' profiles to sync');
 				
 				if (!empty($profiles)) {
-					// Add profiles to list
-					$body = array(
-						'data' => $profiles
-					);
+					// Create profiles first, then add them to the list
+					$created_profiles = array();
 					
-					error_log('Klaviyo Sync Debug - Sending to Klaviyo: ' . print_r($body, true));
+					foreach ($profiles as $profile_data) {
+						// Create or update profile using the correct endpoint
+						$body = array(
+							'data' => array(
+								'type' => 'profile',
+								'attributes' => $profile_data
+							)
+						);
+						
+						$result = $this->make_api_request('profiles/', 'POST', $body);
+						
+						if (is_wp_error($result)) {
+							error_log('Klaviyo profile creation error: ' . $result->get_error_message());
+							$errors++;
+						} else {
+							if (isset($result['data']['id'])) {
+								$created_profiles[] = array(
+									'type' => 'profile',
+									'id' => $result['data']['id']
+								);
+							}
+						}
+					}
 					
-					$result = $this->make_api_request("lists/{$list_id}/profiles/", 'POST', $body);
-					
-					if (is_wp_error($result)) {
-						$errors += count($profiles);
-						error_log('Klaviyo sync batch error: ' . $result->get_error_message());
-					} else {
-						$processed += count($profiles);
-						error_log('Klaviyo Sync Debug - Successfully synced ' . count($profiles) . ' profiles');
+					// Now add the created profiles to the list
+					if (!empty($created_profiles)) {
+						$list_body = array(
+							'data' => $created_profiles
+						);
+						
+						error_log('Klaviyo Sync Debug - Adding profiles to list: ' . print_r($list_body, true));
+						
+						$list_result = $this->make_api_request("lists/{$list_id}/relationships/profiles/", 'POST', $list_body);
+						
+						if (is_wp_error($list_result)) {
+							error_log('Klaviyo list addition error: ' . $list_result->get_error_message());
+							$errors += count($created_profiles);
+						} else {
+							$processed += count($created_profiles);
+							error_log('Klaviyo Sync Debug - Successfully added ' . count($created_profiles) . ' profiles to list');
+						}
 					}
 				}
 			}
@@ -1131,6 +1185,100 @@ class CSD_Klaviyo_Integration {
 			error_log('Klaviyo Sync Exception: ' . $e->getMessage());
 			wp_send_json_error(array('message' => $e->getMessage()));
 		}
+	}
+	
+	/**
+	 * Create mapping from display names to actual column names
+	 * 
+	 * @param array $row Sample row from query results
+	 * @return array Mapping of display names to column names
+	 */
+	private function create_display_to_column_mapping($row) {
+		$mapping = array();
+		
+		// Define mappings for known column patterns
+		$column_mappings = array(
+			'School Name' => 'schools_school_name',
+			'School ID' => 'schools_id',
+			'Address Line 1' => 'schools_street_address_line_1',
+			'Address Line 2' => 'schools_street_address_line_2',
+			'Address Line 3' => 'schools_street_address_line_3',
+			'City' => 'schools_city',
+			'State' => 'schools_state',
+			'Zipcode' => 'schools_zipcode',
+			'Zip Code' => 'schools_zipcode',
+			'Country' => 'schools_country',
+			'County' => 'schools_county',
+			'School Divisions' => 'schools_school_divisions',
+			'School Conferences' => 'schools_school_conferences',
+			'School Level' => 'schools_school_level',
+			'School Type' => 'schools_school_type',
+			'School Enrollment' => 'schools_school_enrollment',
+			'Estimated Enrollment' => 'schools_school_enrollment',
+			'Nickname/Mascot' => 'schools_mascot',
+			'Mascot' => 'schools_mascot',
+			'School Colors' => 'schools_school_colors',
+			'School Website' => 'schools_school_website',
+			'Athletics Website' => 'schools_athletics_website',
+			'Athletics Phone' => 'schools_athletics_phone',
+			'Football Division' => 'schools_football_division',
+			'Staff ID' => 'staff_id',
+			'Full Name' => 'staff_full_name',
+			'Staff Name' => 'staff_full_name',
+			'Name' => 'staff_full_name',
+			'Title' => 'staff_title',
+			'Staff Title' => 'staff_title',
+			'Sport/Department' => 'staff_sport_department',
+			'Department' => 'staff_sport_department',
+			'Email' => 'staff_email',
+			'Staff Email' => 'staff_email',
+			'Phone' => 'staff_phone',
+			'Staff Phone' => 'staff_phone',
+		);
+		
+		// Add mappings for actual column names found in the results
+		foreach (array_keys($row) as $column_name) {
+			// Direct mapping (actual column name to itself)
+			$mapping[$column_name] = $column_name;
+			
+			// Convert column name to display format
+			$display_name = $this->column_to_display_name($column_name);
+			$mapping[$display_name] = $column_name;
+		}
+		
+		// Add predefined mappings
+		foreach ($column_mappings as $display_name => $column_name) {
+			if (array_key_exists($column_name, $row)) {
+				$mapping[$display_name] = $column_name;
+			}
+		}
+		
+		return $mapping;
+	}
+	
+	/**
+	 * Convert column name to display name
+	 * 
+	 * @param string $column_name Database column name
+	 * @return string Human-readable display name
+	 */
+	private function column_to_display_name($column_name) {
+		// Remove table prefixes and convert to display format
+		$display_name = preg_replace('/^(schools|staff|school_staff)_/', '', $column_name);
+		$display_name = str_replace('_', ' ', $display_name);
+		$display_name = ucwords($display_name);
+		
+		// Handle special cases
+		$special_cases = array(
+			'Street Address Line 1' => 'Address Line 1',
+			'Street Address Line 2' => 'Address Line 2', 
+			'Street Address Line 3' => 'Address Line 3',
+			'School Name' => 'School Name',
+			'Full Name' => 'Full Name',
+			'Sport Department' => 'Sport/Department',
+		);
+		
+		return isset($special_cases[$display_name]) ? $special_cases[$display_name] : $display_name;
 	}
 	
 	/**
