@@ -952,7 +952,140 @@ class CSD_Klaviyo_Integration {
 	}
 	
 	/**
-	 * Sync data to Klaviyo
+	 * Subscribe emails to marketing using CORRECT Klaviyo API structure
+	 * 
+	 * @param array $emails Array of email addresses
+	 * @param string $list_id The list ID to subscribe to
+	 * @return bool Success status
+	 */
+	private function subscribe_emails_to_marketing($emails, $list_id) {
+		// Process emails in batches for subscription
+		$batch_size = 100; // Maximum 1000 according to docs, but 100 is safer
+		$total_emails = count($emails);
+		
+		for ($i = 0; $i < $total_emails; $i += $batch_size) {
+			$email_batch = array_slice($emails, $i, $batch_size);
+			
+			// CORRECT structure according to Klaviyo API docs
+			$profiles_data = array();
+			foreach ($email_batch as $email) {
+				$profiles_data[] = array(
+					'data' => array(
+						'type' => 'profile',
+						'attributes' => array(
+							'email' => $email,
+							'subscriptions' => array(
+								'email' => array(
+									'marketing' => array(
+										'consent' => 'SUBSCRIBED'
+									)
+								)
+							)
+						)
+					)
+				);
+			}
+			
+			$body = array(
+				'data' => array(
+					'type' => 'profile-subscription-bulk-create-job',
+					'attributes' => array(
+						'custom_source' => 'WordPress CSD Plugin',
+						'historical_import' => true, // Bypass double opt-in
+						'profiles' => $profiles_data
+					),
+					'relationships' => array(
+						'list' => array(
+							'data' => array(
+								'type' => 'list',
+								'id' => $list_id
+							)
+						)
+					)
+				)
+			);
+			
+			error_log('Klaviyo Sync Debug - Subscription request body: ' . json_encode($body, JSON_PRETTY_PRINT));
+			
+			// Use the subscription bulk create endpoint
+			$result = $this->make_api_request('profile-subscription-bulk-create-jobs/', 'POST', $body);
+			
+			if (is_wp_error($result)) {
+				error_log('Klaviyo subscription batch error: ' . $result->get_error_message());
+				
+				// Fall back to individual subscriptions using the alternative method
+				$this->subscribe_emails_using_individual_jobs($email_batch, $list_id);
+			} else {
+				error_log('Klaviyo Sync Debug - Successfully submitted subscription job for ' . count($email_batch) . ' emails');
+			}
+			
+			// Small delay between batches
+			usleep(500000); // 500ms delay to avoid rate limiting
+		}
+		
+		return true;
+	}
+	
+	/**
+	 * Alternative subscription method using individual profile creation with subscription
+	 * 
+	 * @param array $emails Array of email addresses
+	 * @param string $list_id The list ID
+	 * @return void
+	 */
+	private function subscribe_emails_using_individual_jobs($emails, $list_id) {
+		foreach ($emails as $email) {
+			// Create individual subscription job
+			$body = array(
+				'data' => array(
+					'type' => 'profile-subscription-bulk-create-job',
+					'attributes' => array(
+						'custom_source' => 'WordPress CSD Plugin',
+						'historical_import' => true,
+						'profiles' => array(
+							array(
+								'data' => array(
+									'type' => 'profile',
+									'attributes' => array(
+										'email' => $email,
+										'subscriptions' => array(
+											'email' => array(
+												'marketing' => array(
+													'consent' => 'SUBSCRIBED'
+												)
+											)
+										)
+									)
+								)
+							)
+						)
+					),
+					'relationships' => array(
+						'list' => array(
+							'data' => array(
+								'type' => 'list',
+								'id' => $list_id
+							)
+						)
+					)
+				)
+			);
+			
+			$result = $this->make_api_request('profile-subscription-bulk-create-jobs/', 'POST', $body);
+			
+			if (is_wp_error($result)) {
+				error_log('Klaviyo individual subscription error for ' . $email . ': ' . $result->get_error_message());
+			} else {
+				error_log('Klaviyo Sync Debug - Successfully subscribed individual email: ' . $email);
+			}
+			
+			// Rate limiting delay
+			usleep(200000); // 200ms delay
+		}
+	}
+	
+	/**
+	 * Updated main sync method - CORRECTED VERSION
 	 */
 	public function ajax_sync_to_klaviyo() {
 		// Check nonce
@@ -978,16 +1111,18 @@ class CSD_Klaviyo_Integration {
 		// Clean the SQL query to handle escaped quotes
 		$sql_query = $this->clean_sql_for_sync($sql_query);
 		
+		// Remove pagination from SQL query to get ALL records
+		$sql_query = $this->remove_pagination_from_sql($sql_query);
+		
 		// Debug logging
+		error_log('Klaviyo Sync Debug - Starting corrected sync');
 		error_log('Klaviyo Sync Debug - List ID: ' . $list_id);
-		error_log('Klaviyo Sync Debug - Field Mapping: ' . print_r($field_mapping, true));
-		error_log('Klaviyo Sync Debug - SQL Query: ' . $sql_query);
 		
 		try {
 			// Get database connection
 			$wpdb = csd_db_connection();
 			
-			// Execute the query to get data
+			// Execute the query to get ALL data (no pagination)
 			$results = $wpdb->get_results($sql_query, ARRAY_A);
 			
 			if ($wpdb->last_error) {
@@ -1001,11 +1136,8 @@ class CSD_Klaviyo_Integration {
 			}
 			
 			error_log('Klaviyo Sync Debug - Total SQL results: ' . count($results));
-			error_log('Klaviyo Sync Debug - First result keys: ' . print_r(array_keys($results[0]), true));
-			error_log('Klaviyo Sync Debug - Field mapping received: ' . print_r($field_mapping, true));
 			
-			// The field mapping should already contain the actual column names since we fixed the JavaScript
-			// But let's add some validation to make sure
+			// Validate field mapping
 			$validated_field_mapping = array();
 			$available_columns = array_keys($results[0]);
 			
@@ -1013,148 +1145,133 @@ class CSD_Klaviyo_Integration {
 				if (!empty($klaviyo_field)) {
 					if (in_array($column_name, $available_columns)) {
 						$validated_field_mapping[$column_name] = $klaviyo_field;
-					} else {
-						error_log('Klaviyo Sync Debug - Column not found in results: ' . $column_name);
 					}
 				}
 			}
-			
-			error_log('Klaviyo Sync Debug - Validated Field Mapping: ' . print_r($validated_field_mapping, true));
 			
 			if (empty($validated_field_mapping)) {
 				wp_send_json_error(array('message' => __('No valid field mappings found. Please check your column mappings.', 'csd-manager')));
 				return;
 			}
 			
-			// Process results in batches
-			$batch_size = 100;
+			// Process results and prepare for batch operations
 			$total_records = count($results);
 			$processed = 0;
 			$errors = 0;
 			$skipped = 0;
 			$validation_errors = array();
 			
-			for ($i = 0; $i < $total_records; $i += $batch_size) {
-				$batch = array_slice($results, $i, $batch_size);
-				$profiles = array();
+			// Prepare all profile data first
+			$all_profiles = array();
+			$all_emails = array();
+			
+			foreach ($results as $row_index => $row) {
+				$profile_data = array();
+				$has_email = false;
+				$email_address = '';
 				
-				foreach ($batch as $row_index => $row) {
-					$profile_data = array();
-					$has_email = false;
-					
-					error_log('Klaviyo Sync Debug - Processing row ' . ($i + $row_index) . ': ' . print_r(array_slice($row, 0, 5, true), true));
-					
-					foreach ($validated_field_mapping as $csv_field => $klaviyo_field) {
-						if (!empty($klaviyo_field)) {
-							// Check if the CSV field exists in the row
-							if (!isset($row[$csv_field])) {
-								error_log('Klaviyo Sync Debug - CSV field not found in row: ' . $csv_field . ' (available: ' . implode(', ', array_keys($row)) . ')');
-								continue;
+				foreach ($validated_field_mapping as $csv_field => $klaviyo_field) {
+					if (!empty($klaviyo_field) && isset($row[$csv_field])) {
+						$value = $row[$csv_field];
+						
+						// Skip completely empty values but allow 0
+						if ($value === null || $value === '') {
+							continue;
+						}
+						
+						// Handle email field specially
+						if ($klaviyo_field === 'email') {
+							if (filter_var($value, FILTER_VALIDATE_EMAIL) && strpos($value, '@placeholder') === false) {
+								$has_email = true;
+								$email_address = $value;
+								$profile_data['email'] = $value;
+							} else {
+								$validation_errors[] = "Row " . $row_index . ": Invalid email '" . $value . "'";
+								continue 2; // Skip this entire row
 							}
-							
-							$value = $row[$csv_field];
-							
-							// Skip completely empty values but allow 0
-							if ($value === null || $value === '') {
-								continue;
-							}
-							
-							// Handle email field specially
-							if ($klaviyo_field === 'email') {
-								if (filter_var($value, FILTER_VALIDATE_EMAIL)) {
-									// Additional check for placeholder emails
-									if (strpos($value, '@placeholder') === false) {
-										$has_email = true;
-										$profile_data['email'] = $value;
-									} else {
-										$validation_errors[] = "Row " . ($i + $row_index) . ": Placeholder email '" . $value . "'";
-										continue 2; // Skip this entire row
+						} else {
+							// Handle nested properties
+							if (strpos($klaviyo_field, '.') !== false) {
+								$parts = explode('.', $klaviyo_field, 2);
+								if ($parts[0] === 'location') {
+									if (!isset($profile_data['location'])) {
+										$profile_data['location'] = array();
 									}
-								} else {
-									$validation_errors[] = "Row " . ($i + $row_index) . ": Invalid email '" . $value . "'";
-									continue 2; // Skip this entire row
+									$profile_data['location'][$parts[1]] = $value;
+								} elseif ($parts[0] === 'properties') {
+									if (!isset($profile_data['properties'])) {
+										$profile_data['properties'] = array();
+									}
+									$profile_data['properties'][$parts[1]] = $value;
 								}
 							} else {
-								// Handle nested properties
-								if (strpos($klaviyo_field, '.') !== false) {
-									$parts = explode('.', $klaviyo_field, 2);
-									if ($parts[0] === 'location') {
-										if (!isset($profile_data['location'])) {
-											$profile_data['location'] = array();
-										}
-										$profile_data['location'][$parts[1]] = $value;
-									} elseif ($parts[0] === 'properties') {
-										if (!isset($profile_data['properties'])) {
-											$profile_data['properties'] = array();
-										}
-										$profile_data['properties'][$parts[1]] = $value;
-									}
-								} else {
-									$profile_data[$klaviyo_field] = $value;
-								}
+								$profile_data[$klaviyo_field] = $value;
 							}
 						}
 					}
+				}
+				
+				// Only add profiles that have a valid email
+				if ($has_email && !empty($profile_data)) {
+					$all_profiles[] = $profile_data;
+					$all_emails[] = $email_address;
+				} else {
+					$skipped++;
+				}
+			}
+			
+			error_log('Klaviyo Sync Debug - Prepared ' . count($all_profiles) . ' valid profiles for sync');
+			
+			if (empty($all_profiles)) {
+				wp_send_json_error(array('message' => __('No valid profiles to sync. Please check your email mapping and data.', 'csd-manager')));
+				return;
+			}
+			
+			// First: Create/Update profiles (without subscription)
+			$batch_size = 100;
+			$total_profiles = count($all_profiles);
+			$profile_ids_for_list = array();
+			
+			for ($i = 0; $i < $total_profiles; $i += $batch_size) {
+				$batch = array_slice($all_profiles, $i, $batch_size);
+				
+				error_log('Klaviyo Sync Debug - Processing profile batch ' . (floor($i / $batch_size) + 1) . ' with ' . count($batch) . ' profiles');
+				
+				// Use simplified upsert method
+				$batch_results = $this->upsert_profiles_batch_simplified($batch);
+				$profile_ids_for_list = array_merge($profile_ids_for_list, $batch_results['profile_ids']);
+				$processed += $batch_results['processed'];
+				$errors += $batch_results['errors'];
+			}
+			
+			// Second: Add profiles to list
+			if (!empty($profile_ids_for_list)) {
+				error_log('Klaviyo Sync Debug - Adding ' . count($profile_ids_for_list) . ' profiles to list');
+				
+				$list_batch_size = 100;
+				$total_for_list = count($profile_ids_for_list);
+				
+				for ($i = 0; $i < $total_for_list; $i += $list_batch_size) {
+					$list_batch = array_slice($profile_ids_for_list, $i, $list_batch_size);
 					
-					// Only add profiles that have a valid email
-					if ($has_email && !empty($profile_data)) {
-						$profiles[] = $profile_data; // Don't wrap in type/attributes structure here
-						error_log('Klaviyo Sync Debug - Added profile to batch: ' . print_r($profile_data, true));
+					$list_body = array(
+						'data' => $list_batch
+					);
+					
+					$list_result = $this->make_api_request("lists/{$list_id}/relationships/profiles/", 'POST', $list_body);
+					
+					if (is_wp_error($list_result)) {
+						error_log('Klaviyo list addition error for batch: ' . $list_result->get_error_message());
 					} else {
-						$skipped++;
-						error_log('Klaviyo Sync Debug - Skipped row ' . ($i + $row_index) . ' - has_email: ' . ($has_email ? 'true' : 'false') . ', profile_data: ' . print_r($profile_data, true));
+						error_log('Klaviyo Sync Debug - Successfully added batch of ' . count($list_batch) . ' profiles to list');
 					}
 				}
-				
-				error_log('Klaviyo Sync Debug - Batch ' . ($i / $batch_size + 1) . ' has ' . count($profiles) . ' profiles to sync');
-				
-				if (!empty($profiles)) {
-					// Create profiles first, then add them to the list
-					$created_profiles = array();
-					
-					foreach ($profiles as $profile_data) {
-						// Create or update profile using the correct endpoint
-						$body = array(
-							'data' => array(
-								'type' => 'profile',
-								'attributes' => $profile_data
-							)
-						);
-						
-						$result = $this->make_api_request('profiles/', 'POST', $body);
-						
-						if (is_wp_error($result)) {
-							error_log('Klaviyo profile creation error: ' . $result->get_error_message());
-							$errors++;
-						} else {
-							if (isset($result['data']['id'])) {
-								$created_profiles[] = array(
-									'type' => 'profile',
-									'id' => $result['data']['id']
-								);
-							}
-						}
-					}
-					
-					// Now add the created profiles to the list
-					if (!empty($created_profiles)) {
-						$list_body = array(
-							'data' => $created_profiles
-						);
-						
-						error_log('Klaviyo Sync Debug - Adding profiles to list: ' . print_r($list_body, true));
-						
-						$list_result = $this->make_api_request("lists/{$list_id}/relationships/profiles/", 'POST', $list_body);
-						
-						if (is_wp_error($list_result)) {
-							error_log('Klaviyo list addition error: ' . $list_result->get_error_message());
-							$errors += count($created_profiles);
-						} else {
-							$processed += count($created_profiles);
-							error_log('Klaviyo Sync Debug - Successfully added ' . count($created_profiles) . ' profiles to list');
-						}
-					}
-				}
+			}
+			
+			// Third: Subscribe all emails to marketing using corrected method
+			if (!empty($all_emails)) {
+				error_log('Klaviyo Sync Debug - Subscribing ' . count($all_emails) . ' emails to marketing');
+				$this->subscribe_emails_to_marketing($all_emails, $list_id);
 			}
 			
 			// Prepare response message
@@ -1169,7 +1286,7 @@ class CSD_Klaviyo_Integration {
 				$message_parts[] = sprintf(__('%d skipped (no valid email)', 'csd-manager'), $skipped);
 			}
 			
-			$final_message = __('Sync completed! ', 'csd-manager') . implode(', ', $message_parts) . '.';
+			$final_message = __('Sync completed! ', 'csd-manager') . implode(', ', $message_parts) . '. All profiles have been subscribed to email marketing.';
 			
 			wp_send_json_success(array(
 				'message' => $final_message,
@@ -1177,7 +1294,7 @@ class CSD_Klaviyo_Integration {
 				'errors' => $errors,
 				'skipped' => $skipped,
 				'total_records' => $total_records,
-				'validation_errors' => array_slice($validation_errors, 0, 10), // Show first 10 validation errors
+				'validation_errors' => array_slice($validation_errors, 0, 10),
 				'list_url' => "https://www.klaviyo.com/lists/list/{$list_id}"
 			));
 			
@@ -1185,6 +1302,280 @@ class CSD_Klaviyo_Integration {
 			error_log('Klaviyo Sync Exception: ' . $e->getMessage());
 			wp_send_json_error(array('message' => $e->getMessage()));
 		}
+	}
+	
+	/**
+	 * Remove pagination from SQL query to get all records
+	 * 
+	 * @param string $sql SQL query
+	 * @return string SQL query without LIMIT clause
+	 */
+	private function remove_pagination_from_sql($sql) {
+		// Remove LIMIT clauses - both formats
+		$sql = preg_replace('/\s+LIMIT\s+\d+(?:\s*,\s*\d+)?$/is', '', $sql);
+		$sql = preg_replace('/\s+LIMIT\s+\d+\s+OFFSET\s+\d+$/is', '', $sql);
+		
+		// Trim any trailing whitespace
+		$sql = trim($sql);
+		
+		return $sql;
+	}
+	
+	/**
+	 * Upsert profiles in batch using the correct Klaviyo API endpoint
+	 * 
+	 * @param array $profiles Array of profile data
+	 * @return array Results with profile_ids, emails, processed count, and errors count
+	 */
+	private function upsert_profiles_batch($profiles) {
+		$profile_ids = array();
+		$emails = array();
+		$processed = 0;
+		$errors = 0;
+		
+		// Process profiles individually using PATCH for upsert
+		foreach ($profiles as $profile_data) {
+			$email = $profile_data['email'];
+			
+			// First, try to get the existing profile by email
+			$existing_profile = $this->get_profile_by_email($email);
+			
+			if (is_wp_error($existing_profile)) {
+				// Profile doesn't exist, create new one
+				$body = array(
+					'data' => array(
+						'type' => 'profile',
+						'attributes' => $profile_data
+					)
+				);
+				
+				$result = $this->make_api_request('profiles/', 'POST', $body);
+				
+				if (is_wp_error($result)) {
+					error_log('Klaviyo profile creation error: ' . $result->get_error_message());
+					$errors++;
+				} else {
+					if (isset($result['data']['id'])) {
+						$profile_ids[] = array(
+							'type' => 'profile',
+							'id' => $result['data']['id']
+						);
+						$emails[] = $email;
+						$processed++;
+					} else {
+						$errors++;
+					}
+				}
+			} else {
+				// Profile exists, update it
+				$profile_id = $existing_profile['id'];
+				
+				$body = array(
+					'data' => array(
+						'type' => 'profile',
+						'id' => $profile_id,
+						'attributes' => $profile_data
+					)
+				);
+				
+				$result = $this->make_api_request("profiles/{$profile_id}/", 'PATCH', $body);
+				
+				if (is_wp_error($result)) {
+					error_log('Klaviyo profile update error: ' . $result->get_error_message());
+					$errors++;
+				} else {
+					$profile_ids[] = array(
+						'type' => 'profile',
+						'id' => $profile_id
+					);
+					$emails[] = $email;
+					$processed++;
+				}
+			}
+			
+			// Add a small delay to avoid rate limiting
+			usleep(50000); // 50ms delay
+		}
+		
+		return array(
+			'profile_ids' => $profile_ids,
+			'emails' => $emails,
+			'processed' => $processed,
+			'errors' => $errors
+		);
+	}
+	
+	/**
+	 * Get existing profile by email
+	 * 
+	 * @param string $email Email address
+	 * @return array|WP_Error Profile data or error
+	 */
+	private function get_profile_by_email($email) {
+		// Use the profiles endpoint with email filter
+		$encoded_email = urlencode($email);
+		$result = $this->make_api_request("profiles/?filter=equals(email,\"{$encoded_email}\")");
+		
+		if (is_wp_error($result)) {
+			return $result;
+		}
+		
+		if (isset($result['data']) && !empty($result['data'])) {
+			return $result['data'][0]; // Return first matching profile
+		}
+		
+		return new WP_Error('profile_not_found', 'Profile not found');
+	}
+	
+	/**
+	 * Subscribe a single email to marketing (fallback method)
+	 * 
+	 * @param string $email Email address
+	 * @return bool Success status
+	 */
+	private function subscribe_single_email($email) {
+		$body = array(
+			'data' => array(
+				'type' => 'subscription',
+				'attributes' => array(
+					'custom_source' => 'WordPress CSD Plugin',
+					'email' => $email,
+					'subscriptions' => array(
+						'email' => array(
+							'marketing' => array(
+								'consent' => 'SUBSCRIBED',
+								'consented_at' => date('c')
+							)
+						)
+					)
+				)
+			)
+		);
+		
+		$result = $this->make_api_request('profile-subscription-bulk-create-jobs/', 'POST', $body);
+		
+		if (is_wp_error($result)) {
+			error_log('Klaviyo individual subscription error for ' . $email . ': ' . $result->get_error_message());
+			return false;
+		}
+		
+		return true;
+	}
+	
+	/**
+	 * Create profiles individually (fallback method)
+	 * 
+	 * @param array $profiles Array of profile data
+	 * @return array Results with profile_ids, processed count, and errors count
+	 */
+	private function create_profiles_individually($profiles) {
+		$profile_ids = array();
+		$processed = 0;
+		$errors = 0;
+		
+		foreach ($profiles as $profile_data) {
+			$body = array(
+				'data' => array(
+					'type' => 'profile',
+					'attributes' => $profile_data
+				)
+			);
+			
+			$result = $this->make_api_request('profiles/', 'POST', $body);
+			
+			if (is_wp_error($result)) {
+				error_log('Klaviyo individual profile creation error: ' . $result->get_error_message());
+				$errors++;
+			} else {
+				if (isset($result['data']['id'])) {
+					$profile_ids[] = array(
+						'type' => 'profile',
+						'id' => $result['data']['id']
+					);
+					$processed++;
+				} else {
+					$errors++;
+				}
+			}
+			
+			// Add a small delay to avoid rate limiting
+			usleep(50000); // 50ms delay
+		}
+		
+		return array(
+			'profile_ids' => $profile_ids,
+			'processed' => $processed,
+			'errors' => $errors
+		);
+	}
+	
+	/**
+	 * Create profiles using upsert endpoint (most efficient)
+	 * 
+	 * @param array $profiles Array of profile data
+	 * @return array Results with profile_ids, processed count, and errors count
+	 */
+	private function create_profiles_with_upsert($profiles) {
+		$profile_ids = array();
+		$processed = 0;
+		$errors = 0;
+		
+		// Process in smaller batches for upsert
+		$batch_size = 50; // Smaller batches for upsert
+		$total_profiles = count($profiles);
+		
+		for ($i = 0; $i < $total_profiles; $i += $batch_size) {
+			$batch = array_slice($profiles, $i, $batch_size);
+			
+			// Prepare batch data for upsert
+			$batch_data = array();
+			foreach ($batch as $profile_data) {
+				$batch_data[] = array(
+					'type' => 'profile',
+					'attributes' => $profile_data
+				);
+			}
+			
+			$body = array(
+				'data' => $batch_data
+			);
+			
+			// Use the profile upsert endpoint
+			$result = $this->make_api_request('profiles/', 'PATCH', $body);
+			
+			if (is_wp_error($result)) {
+				error_log('Klaviyo batch upsert error: ' . $result->get_error_message());
+				// Fall back to individual creation for this batch
+				$individual_results = $this->create_profiles_individually($batch);
+				$profile_ids = array_merge($profile_ids, $individual_results['profile_ids']);
+				$processed += $individual_results['processed'];
+				$errors += $individual_results['errors'];
+			} else {
+				// Upsert successful
+				if (isset($result['data']) && is_array($result['data'])) {
+					foreach ($result['data'] as $profile) {
+						if (isset($profile['id'])) {
+							$profile_ids[] = array(
+								'type' => 'profile',
+								'id' => $profile['id']
+							);
+							$processed++;
+						}
+					}
+				} else {
+					$errors += count($batch);
+				}
+			}
+			
+			// Small delay to avoid rate limiting
+			usleep(100000); // 100ms delay between batches
+		}
+		
+		return array(
+			'profile_ids' => $profile_ids,
+			'processed' => $processed,
+			'errors' => $errors
+		);
 	}
 	
 	/**

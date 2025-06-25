@@ -1382,6 +1382,9 @@ class CSD_Query_Builder {
 		})(jQuery);
 		</script>
 		<script type="text/javascript">
+		// Replace the entire Klaviyo Integration JavaScript section in query-builder.php
+		// This goes in the <script type="text/javascript"> section for Klaviyo
+		
 		(function($) {
 			// Klaviyo Integration JavaScript
 			var klaviyoCurrentSQL = '';
@@ -1557,14 +1560,7 @@ class CSD_Query_Builder {
 						
 						if (response.success) {
 							// Get columns again and rebuild interface
-							var columns = [];
-							$('.csd-results-table-wrapper th .th-content').each(function() {
-								var columnName = $(this).text().trim();
-								if (columnName) {
-									columns.push(columnName);
-								}
-							});
-							
+							var columns = extractActualColumnNames();
 							buildFieldMappingInterface(columns, response.data.fields);
 							showKlaviyoMessage('success', '<?php _e('Fields refreshed from Klaviyo!', 'csd-manager'); ?>');
 						} else {
@@ -1585,27 +1581,81 @@ class CSD_Query_Builder {
 					generateFieldMapping();
 				}
 		
-				// Step 1: Extract column names from the query results table
-				function generateFieldMapping() {
+				// FIXED: Extract actual column names from query results
+				function extractActualColumnNames() {
 					var columns = [];
 					
-					// Look at each table header and extract the actual database column name
-					// from the data-column attribute that was set by the PHP
+					// Look at the actual results table and extract column names from data-column attributes
 					$('.csd-results-table-wrapper table thead th').each(function() {
 						var columnName = $(this).attr('data-column');
-						if (columnName) {
-							columns.push(columnName);
+						if (columnName && columnName.trim() !== '') {
+							columns.push(columnName.trim());
 						}
 					});
 					
-					console.log('Klaviyo Debug - Columns extracted from table headers:', columns);
+					// If no data-column attributes found, fall back to extracting from table headers
+					if (columns.length === 0) {
+						$('.csd-results-table-wrapper table thead th').each(function() {
+							var headerText = $(this).text().trim();
+							// Try to convert display names back to actual column names
+							var columnName = convertDisplayNameToColumnName(headerText);
+							if (columnName) {
+								columns.push(columnName);
+							}
+						});
+					}
+					
+					console.log('Klaviyo Debug - Extracted columns:', columns);
+					return columns;
+				}
+				
+				// Helper function to convert display names back to column names
+				function convertDisplayNameToColumnName(displayName) {
+					// Map common display names to actual column names
+					var displayToColumnMap = {
+						'ID': 'schools_id',
+						'School Name': 'schools_school_name',
+						'Street Address Line 1': 'schools_street_address_line_1',
+						'Street Address Line 2': 'schools_street_address_line_2',
+						'Street Address Line 3': 'schools_street_address_line_3',
+						'City': 'schools_city',
+						'State': 'schools_state',
+						'Zipcode': 'schools_zipcode',
+						'Country': 'schools_country',
+						'County': 'schools_county',
+						'School Divisions': 'schools_school_divisions',
+						'School Conferences': 'schools_school_conferences',
+						'School Level': 'schools_school_level',
+						'School Type': 'schools_school_type',
+						'School Enrollment': 'schools_school_enrollment',
+						'Mascot': 'schools_mascot',
+						'School Colors': 'schools_school_colors',
+						'School Website': 'schools_school_website',
+						'Athletics Website': 'schools_athletics_website',
+						'Athletics Phone': 'schools_athletics_phone',
+						'Football Division': 'schools_football_division',
+						'Full Name': 'staff_full_name',
+						'Title': 'staff_title',
+						'Sport Department': 'staff_sport_department',
+						'Email': 'staff_email',
+						'Phone': 'staff_phone'
+					};
+					
+					return displayToColumnMap[displayName] || null;
+				}
+		
+				// FIXED: Generate field mapping interface using actual column names
+				function generateFieldMapping() {
+					var columns = extractActualColumnNames();
+					
+					console.log('Klaviyo Debug - Columns extracted for mapping:', columns);
 					
 					if (columns.length === 0) {
 						showKlaviyoMessage('error', 'No columns found in query results for mapping.');
 						return;
 					}
 					
-					// Step 2: Get available Klaviyo fields and build the mapping interface
+					// Get available Klaviyo fields and build the mapping interface
 					getKlaviyoFields(false).done(function(response) {
 						if (response.success) {
 							buildFieldMappingInterface(columns, response.data.fields);
@@ -1621,31 +1671,28 @@ class CSD_Query_Builder {
 					});
 				}
 				
-				// Step 2: Build the field mapping interface (dropdowns for each column)
+				// FIXED: Build field mapping interface using actual column names
 				function buildFieldMappingInterface(queryColumns, klaviyoFields) {
 					var html = '';
 					
-					// Create a dropdown for each database column
-					$.each(queryColumns, function(index, column) {
-						// Convert ugly database column name to readable display name
-						// e.g., "staff_email" becomes "Staff Email"
-						var displayName = formatColumnDisplayName(column);
+					// Create a dropdown for each actual database column
+					$.each(queryColumns, function(index, columnName) {
+						// Convert database column name to readable display name for the UI
+						var displayName = formatColumnDisplayName(columnName);
 						
 						html += '<div class="csd-field-mapping-row">';
 						html += '<label>' + displayName + ':</label>';
 						
-						// IMPORTANT: Store the actual database column name in data-column
-						// so we can retrieve it later when building the final mapping
-						html += '<select class="csd-field-mapping" data-column="' + column + '">';
+						// CRITICAL FIX: Store the actual database column name in data-column
+						html += '<select class="csd-field-mapping" data-column="' + columnName + '">';
 						html += '<option value="">-- Do not map --</option>';
 						
 						// Add all available Klaviyo fields as options
 						$.each(klaviyoFields, function(fieldKey, fieldLabel) {
 							var selected = '';
 							
-							// Auto-select obvious matches to save user time
-							// e.g., if column contains "email", auto-select the email field
-							var columnLower = column.toLowerCase();
+							// Auto-select obvious matches based on actual column names
+							var columnLower = columnName.toLowerCase();
 							if ((columnLower.includes('email') && fieldKey === 'email') ||
 								(columnLower.includes('phone') && fieldKey === 'phone_number') ||
 								(columnLower.includes('city') && fieldKey === 'location.city') ||
@@ -1667,31 +1714,29 @@ class CSD_Query_Builder {
 					$('#csd-field-mapping-container').html(html);
 				}
 				
-				// Step 3: Helper function to convert database column names to readable display names
-				function formatColumnDisplayName(column) {
-					var displayName = column;
+				// Helper function to convert database column names to readable display names
+				function formatColumnDisplayName(columnName) {
+					var displayName = columnName;
 					
-					// Handle different table prefixes
-					if (column.startsWith('schools_')) {
-						displayName = column.replace('schools_', '').replace(/_/g, ' ');
+					// Handle different table prefixes and convert to readable names
+					if (columnName.startsWith('schools_')) {
+						displayName = columnName.replace('schools_', '').replace(/_/g, ' ');
 						displayName = 'School ' + displayName.charAt(0).toUpperCase() + displayName.slice(1);
-					} else if (column.startsWith('staff_')) {
-						displayName = column.replace('staff_', '').replace(/_/g, ' ');
+					} else if (columnName.startsWith('staff_')) {
+						displayName = columnName.replace('staff_', '').replace(/_/g, ' ');
 						displayName = 'Staff ' + displayName.charAt(0).toUpperCase() + displayName.slice(1);
-					} else if (column.startsWith('school_staff_')) {
-						displayName = column.replace('school_staff_', '').replace(/_/g, ' ');
+					} else if (columnName.startsWith('school_staff_')) {
+						displayName = columnName.replace('school_staff_', '').replace(/_/g, ' ');
 						displayName = 'School Staff ' + displayName.charAt(0).toUpperCase() + displayName.slice(1);
 					} else {
-						displayName = column.replace(/_/g, ' ');
+						displayName = columnName.replace(/_/g, ' ');
 						displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
 					}
 					
 					// Fix common formatting issues
-					if (displayName === 'Staff Full name') displayName = 'Staff Full Name';
-					if (displayName === 'Staff Sport department') displayName = 'Staff Sport/Department';
-					if (displayName === 'School Street address line 1') displayName = 'School Address Line 1';
-					if (displayName === 'School Street address line 2') displayName = 'School Address Line 2';
-					if (displayName === 'School Street address line 3') displayName = 'School Address Line 3';
+					displayName = displayName.replace(/\bFull name\b/g, 'Full Name');
+					displayName = displayName.replace(/\bSport department\b/g, 'Sport/Department');
+					displayName = displayName.replace(/\bStreet address line/g, 'Address Line');
 					
 					return displayName;
 				}
@@ -1743,19 +1788,19 @@ class CSD_Query_Builder {
 					$('#csd-klaviyo-step-1').show();
 				});
 		
-				// Step 4: When user clicks "Start Sync", collect the final field mapping
+				// FIXED: When user clicks "Start Sync", collect the final field mapping using actual column names
 				$(document).on('click', '#csd-klaviyo-start-sync', function() {
 					// Build the final mapping object by reading each dropdown
 					klaviyoFieldMapping = {};
 					$('.csd-field-mapping').each(function() {
 						// Get the actual database column name from data-column attribute
-						var column = $(this).attr('data-column');
+						var columnName = $(this).attr('data-column');
 						// Get the selected Klaviyo field from the dropdown value
 						var klaviyoField = $(this).val();
 						
 						// Only include mappings where user selected a Klaviyo field
-						if (klaviyoField && column) {
-							klaviyoFieldMapping[column] = klaviyoField;
+						if (klaviyoField && columnName) {
+							klaviyoFieldMapping[columnName] = klaviyoField;
 						}
 					});
 					
@@ -1778,8 +1823,8 @@ class CSD_Query_Builder {
 					// Start the actual sync process
 					startKlaviyoSync();
 				});
-		
-				// Start Klaviyo sync
+						
+				// Start Klaviyo sync with progress reporting
 				function startKlaviyoSync() {
 					$('#csd-klaviyo-step-2').hide();
 					$('#csd-klaviyo-step-3').show();
@@ -1789,7 +1834,7 @@ class CSD_Query_Builder {
 					$('.csd-progress-text').text('0%');
 					$('#csd-sync-status').text('<?php _e('Starting sync...', 'csd-manager'); ?>');
 					
-					// Start the sync
+					// Start the sync with longer timeout for large datasets
 					$.ajax({
 						url: csd_ajax.ajax_url,
 						type: 'POST',
@@ -1800,17 +1845,33 @@ class CSD_Query_Builder {
 							sql_query: klaviyoCurrentSQL,
 							nonce: '<?php echo wp_create_nonce('csd-klaviyo-nonce'); ?>'
 						},
+						timeout: 300000, // 5 minute timeout for large syncs
 						xhr: function() {
 							var xhr = new window.XMLHttpRequest();
-							// Simulate progress (since we can't get real progress from PHP easily)
+							
+							// Improved progress simulation
 							var progress = 0;
 							var progressInterval = setInterval(function() {
-								if (progress < 90) {
-									progress += Math.random() * 10;
+								if (progress < 85) { // Don't go past 85% until we get the actual response
+									var increment = Math.random() * 3; // Slower, more realistic progress
+									progress += increment;
 									$('.csd-progress-fill').css('width', progress + '%');
 									$('.csd-progress-text').text(Math.round(progress) + '%');
+									
+									// Update status messages based on progress
+									if (progress < 20) {
+										$('#csd-sync-status').text('<?php _e('Preparing data for sync...', 'csd-manager'); ?>');
+									} else if (progress < 40) {
+										$('#csd-sync-status').text('<?php _e('Validating email addresses...', 'csd-manager'); ?>');
+									} else if (progress < 60) {
+										$('#csd-sync-status').text('<?php _e('Creating profiles in Klaviyo...', 'csd-manager'); ?>');
+									} else if (progress < 80) {
+										$('#csd-sync-status').text('<?php _e('Adding profiles to list...', 'csd-manager'); ?>');
+									} else {
+										$('#csd-sync-status').text('<?php _e('Finalizing sync...', 'csd-manager'); ?>');
+									}
 								}
-							}, 500);
+							}, 1000); // Update every second instead of every 500ms
 							
 							xhr.addEventListener('loadend', function() {
 								clearInterval(progressInterval);
@@ -1818,19 +1879,43 @@ class CSD_Query_Builder {
 							
 							return xhr;
 						},
+						beforeSend: function() {
+							// Disable browser page unload warning during sync
+							window.onbeforeunload = function() {
+								return "Sync in progress. Are you sure you want to leave?";
+							};
+						},
 						success: function(response) {
+							// Re-enable page unload
+							window.onbeforeunload = null;
+							
 							// Complete progress
 							$('.csd-progress-fill').css('width', '100%');
 							$('.csd-progress-text').text('100%');
+							$('#csd-sync-status').text('<?php _e('Sync completed!', 'csd-manager'); ?>');
 							
 							if (response.success) {
-								showSyncCompletion(response.data);
+								// Add a small delay to show completion before showing results
+								setTimeout(function() {
+									showSyncCompletion(response.data);
+								}, 1000);
 							} else {
 								showSyncError(response.data.message || '<?php _e('Sync failed.', 'csd-manager'); ?>');
 							}
 						},
-						error: function() {
-							showSyncError('<?php _e('Error during sync process.', 'csd-manager'); ?>');
+						error: function(xhr, status, error) {
+							// Re-enable page unload
+							window.onbeforeunload = null;
+							
+							var errorMessage = '<?php _e('Error during sync process.', 'csd-manager'); ?>';
+							
+							if (status === 'timeout') {
+								errorMessage = '<?php _e('Sync timed out. This may happen with very large datasets. Please try syncing smaller batches.', 'csd-manager'); ?>';
+							} else if (xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+								errorMessage = xhr.responseJSON.data.message;
+							}
+							
+							showSyncError(errorMessage);
 						}
 					});
 				}
@@ -2677,17 +2762,13 @@ class CSD_Query_Builder {
 			$html .= '<div class="csd-results-table-wrapper">';
 			$html .= '<table class="wp-list-table widefat fixed striped csd-resizable-table">';
 			
-			// Table headers with data-column attributes
+			// Table headers with proper data-column attributes
 			$html .= '<thead><tr>';
 			foreach (array_keys($results[0]) as $column) {
-				$label = $column;
+				// Create display label from column name
+				$label = $this->format_column_header($column);
 				
-				// Try to make the column header more readable
-				$label = str_replace('_', ' ', $label);
-				$label = ucwords($label);
-				
-				// Add both the display label and the actual column name as a data attribute
-				// This is the key part - we're storing the actual column name in data-column
+				// CRITICAL FIX: Always use the actual database column name in data-column
 				$html .= '<th data-column="' . esc_attr($column) . '">';
 				$html .= '<div class="th-content">' . esc_html($label) . '</div>';
 				$html .= '<div class="resize-handle"></div>';
@@ -2789,6 +2870,64 @@ class CSD_Query_Builder {
 		}
 		
 		return $html;
+	}
+	
+	/**
+	 * Format column header for display
+	 * 
+	 * @param string $column Column name
+	 * @return string Formatted header
+	 */
+	private function format_column_header($column) {
+		// Define specific mappings for better display names
+		$header_mappings = array(
+			'schools_id' => 'School ID',
+			'schools_school_name' => 'School Name',
+			'schools_street_address_line_1' => 'Address Line 1',
+			'schools_street_address_line_2' => 'Address Line 2',
+			'schools_street_address_line_3' => 'Address Line 3',
+			'schools_city' => 'City',
+			'schools_state' => 'State',
+			'schools_zipcode' => 'Zipcode',
+			'schools_country' => 'Country',
+			'schools_county' => 'County',
+			'schools_school_divisions' => 'School Divisions',
+			'schools_school_conferences' => 'School Conferences',
+			'schools_school_level' => 'School Level',
+			'schools_school_type' => 'School Type',
+			'schools_school_enrollment' => 'Estimated Enrollment',
+			'schools_mascot' => 'Nickname/Mascot',
+			'schools_school_colors' => 'School Colors',
+			'schools_school_website' => 'School Website',
+			'schools_athletics_website' => 'Athletics Website',
+			'schools_athletics_phone' => 'Athletics Phone',
+			'schools_football_division' => 'Football Division',
+			'schools_date_created' => 'School Date Created',
+			'schools_date_updated' => 'School Date Updated',
+			'staff_id' => 'Staff ID',
+			'staff_full_name' => 'Full Name',
+			'staff_title' => 'Title',
+			'staff_sport_department' => 'Sport/Department',
+			'staff_email' => 'Email',
+			'staff_phone' => 'Phone',
+			'staff_date_created' => 'Staff Date Created',
+			'staff_date_updated' => 'Staff Date Updated',
+			'school_staff_id' => 'Relationship ID',
+			'school_staff_school_id' => 'School ID (Rel)',
+			'school_staff_staff_id' => 'Staff ID (Rel)',
+			'school_staff_date_created' => 'Relationship Created'
+		);
+		
+		// Return specific mapping if it exists
+		if (isset($header_mappings[$column])) {
+			return $header_mappings[$column];
+		}
+		
+		// Otherwise, do generic formatting
+		$label = str_replace('_', ' ', $column);
+		$label = ucwords($label);
+		
+		return $label;
 	}
 	
 	/**
