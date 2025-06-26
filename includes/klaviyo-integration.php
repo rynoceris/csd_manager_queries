@@ -1245,19 +1245,16 @@ class CSD_Klaviyo_Integration {
 			$processed = $import_results['processed'];
 			$errors = $import_results['errors'];
 			
-			// Step 2: Check subscription status and selectively subscribe
-			$subscription_results = $this->smart_subscribe_profiles($all_emails, $list_id);
+			// Step 2: Safely subscribe profiles with proper error handling
+			$subscription_results = $this->safe_bulk_subscribe($all_emails, $list_id);
 			
 			// Prepare response message
 			$message_parts = array();
 			$message_parts[] = sprintf(__('%d profiles imported', 'csd-manager'), $processed);
+			$message_parts[] = sprintf(__('%d subscribed to list', 'csd-manager'), $subscription_results['subscribed']);
 			
-			if (isset($subscription_results['subscribed'])) {
-				$message_parts[] = sprintf(__('%d subscribed to list', 'csd-manager'), $subscription_results['subscribed']);
-			}
-			
-			if (isset($subscription_results['previously_unsubscribed'])) {
-				$message_parts[] = sprintf(__('%d previously unsubscribed (skipped)', 'csd-manager'), $subscription_results['previously_unsubscribed']);
+			if ($subscription_results['already_subscribed'] > 0) {
+				$message_parts[] = sprintf(__('%d already subscribed/added to list', 'csd-manager'), $subscription_results['already_subscribed']);
 			}
 			
 			if ($errors > 0) {
@@ -1274,18 +1271,25 @@ class CSD_Klaviyo_Integration {
 			
 			$final_message = __('Sync completed! ', 'csd-manager') . implode(', ', $message_parts) . '.';
 			
-			wp_send_json_success(array(
+			// Include error details if any
+			$response_data = array(
 				'message' => $final_message,
 				'processed' => $processed,
-				'subscribed' => isset($subscription_results['subscribed']) ? $subscription_results['subscribed'] : 0,
-				'previously_unsubscribed' => isset($subscription_results['previously_unsubscribed']) ? $subscription_results['previously_unsubscribed'] : 0,
+				'subscribed' => $subscription_results['subscribed'],
+				'already_subscribed' => $subscription_results['already_subscribed'],
 				'errors' => $errors,
 				'skipped' => $skipped,
 				'duplicates_merged' => $duplicates_found,
 				'total_records' => $total_records,
 				'validation_errors' => array_slice($validation_errors, 0, 10),
 				'list_url' => "https://www.klaviyo.com/lists/list/{$list_id}"
-			));
+			);
+			
+			if (!empty($subscription_results['error_details'])) {
+				$response_data['subscription_errors'] = $subscription_results['error_details'];
+			}
+			
+			wp_send_json_success($response_data);
 			
 		} catch (Exception $e) {
 			error_log('Klaviyo Sync Exception: ' . $e->getMessage());
@@ -1294,52 +1298,40 @@ class CSD_Klaviyo_Integration {
 	}
 	
 	/**
-	 * Smart subscription method - only subscribes profiles that haven't previously unsubscribed
+	 * Safely bulk subscribe profiles with proper error handling for existing subscriptions
+	 * This method handles edge cases where profiles already exist with different consent dates
 	 * 
 	 * @param array $emails Array of email addresses
 	 * @param string $list_id The list ID to subscribe to
 	 * @return array Results
 	 */
-	private function smart_subscribe_profiles($emails, $list_id) {
-		$total_emails = count($emails);
+	private function safe_bulk_subscribe($emails, $list_id) {
+		$unique_emails = array_unique($emails);
+		$total_emails = count($unique_emails);
 		$subscribed = 0;
-		$previously_unsubscribed = 0;
+		$already_subscribed = 0;
 		$errors = 0;
-		$batch_size = 50; // Smaller batches for checking subscription status
+		$error_details = array();
 		
-		error_log('Klaviyo Sync Debug - Starting smart subscription of ' . $total_emails . ' emails');
+		error_log('Klaviyo Sync Debug - Starting safe bulk subscription of ' . $total_emails . ' emails');
+		
+		// Process in smaller batches to handle errors better
+		$batch_size = 100;
 		
 		for ($i = 0; $i < $total_emails; $i += $batch_size) {
-			$email_batch = array_slice($emails, $i, $batch_size);
+			$email_batch = array_slice($unique_emails, $i, $batch_size);
 			$batch_number = floor($i / $batch_size) + 1;
 			
-			error_log('Klaviyo Sync Debug - Processing smart subscription batch ' . $batch_number . ' with ' . count($email_batch) . ' emails');
+			error_log('Klaviyo Sync Debug - Processing subscription batch ' . $batch_number . ' with ' . count($email_batch) . ' emails');
 			
-			// Check subscription status for each email in this batch
-			$emails_to_subscribe = array();
+			$batch_result = $this->subscribe_email_batch($email_batch, $list_id);
 			
-			foreach ($email_batch as $email) {
-				$subscription_status = $this->get_profile_subscription_status($email);
-				
-				if ($subscription_status === 'never_subscribed' || $subscription_status === 'subscribed') {
-					// Safe to subscribe - either new profile or already subscribed
-					$emails_to_subscribe[] = $email;
-				} elseif ($subscription_status === 'unsubscribed') {
-					// Previously unsubscribed - skip to avoid re-subscribing without consent
-					$previously_unsubscribed++;
-					error_log('Klaviyo Sync Debug - Skipping previously unsubscribed email: ' . $email);
-				} else {
-					// Unknown status or error - skip to be safe
-					$errors++;
-					error_log('Klaviyo Sync Debug - Unknown subscription status for email: ' . $email);
-				}
-			}
+			$subscribed += $batch_result['subscribed'];
+			$already_subscribed += $batch_result['already_subscribed'];
+			$errors += $batch_result['errors'];
 			
-			// Subscribe the safe emails using the simple approach (no historical import)
-			if (!empty($emails_to_subscribe)) {
-				$subscribe_result = $this->subscribe_safe_profiles($emails_to_subscribe, $list_id);
-				$subscribed += $subscribe_result['subscribed'];
-				$errors += $subscribe_result['errors'];
+			if (!empty($batch_result['error_details'])) {
+				$error_details = array_merge($error_details, $batch_result['error_details']);
 			}
 			
 			// Add delay between batches
@@ -1350,124 +1342,307 @@ class CSD_Klaviyo_Integration {
 		
 		return array(
 			'subscribed' => $subscribed,
-			'previously_unsubscribed' => $previously_unsubscribed,
-			'errors' => $errors
+			'already_subscribed' => $already_subscribed,
+			'errors' => $errors,
+			'error_details' => array_slice($error_details, 0, 10) // Limit error details for response
 		);
 	}
 	
 	/**
-	 * Get profile subscription status
+	 * Subscribe a batch of emails with individual error handling
 	 * 
-	 * @param string $email Email address
-	 * @return string Status: 'never_subscribed', 'subscribed', 'unsubscribed', or 'unknown'
+	 * @param array $emails Array of email addresses for this batch
+	 * @param string $list_id The list ID to subscribe to
+	 * @return array Results for this batch
 	 */
-	private function get_profile_subscription_status($email) {
-		$encoded_email = urlencode($email);
-		$result = $this->make_api_request("profiles/?filter=equals(email,\"{$encoded_email}\")&fields[profile]=email,subscriptions");
+	private function subscribe_email_batch($emails, $list_id) {
+		$subscribed = 0;
+		$already_subscribed = 0;
+		$errors = 0;
+		$error_details = array();
 		
-		if (is_wp_error($result)) {
-			return 'unknown';
+		// Try the bulk approach first (fastest if it works)
+		$bulk_result = $this->try_bulk_subscribe($emails, $list_id);
+		
+		if ($bulk_result['success']) {
+			return array(
+				'subscribed' => count($emails),
+				'already_subscribed' => 0,
+				'errors' => 0,
+				'error_details' => array()
+			);
 		}
 		
-		if (empty($result['data'])) {
-			// Profile doesn't exist - safe to subscribe
-			return 'never_subscribed';
-		}
+		// If bulk fails, fall back to individual processing
+		error_log('Klaviyo Sync Debug - Bulk subscription failed, falling back to individual processing');
 		
-		$profile = $result['data'][0];
-		
-		// Check if profile has subscription data
-		if (!isset($profile['attributes']['subscriptions']['email']['marketing'])) {
-			// No subscription data - safe to subscribe
-			return 'never_subscribed';
-		}
-		
-		$marketing_subscription = $profile['attributes']['subscriptions']['email']['marketing'];
-		
-		// Check the consent status
-		if (isset($marketing_subscription['consent'])) {
-			switch ($marketing_subscription['consent']) {
-				case 'SUBSCRIBED':
-					return 'subscribed';
-				case 'UNSUBSCRIBED':
-					return 'unsubscribed';
-				case 'NEVER_SUBSCRIBED':
-					return 'never_subscribed';
-				default:
-					return 'unknown';
+		foreach ($emails as $email) {
+			$individual_result = $this->subscribe_individual_email($email, $list_id);
+			
+			switch ($individual_result['status']) {
+				case 'subscribed':
+					$subscribed++;
+					break;
+				case 'already_subscribed':
+					$already_subscribed++;
+					break;
+				case 'error':
+					$errors++;
+					if (!empty($individual_result['error'])) {
+						$error_details[] = $email . ': ' . $individual_result['error'];
+					}
+					break;
 			}
+			
+			// Small delay between individual requests
+			usleep(100000); // 100ms
 		}
 		
-		return 'unknown';
+		return array(
+			'subscribed' => $subscribed,
+			'already_subscribed' => $already_subscribed,
+			'errors' => $errors,
+			'error_details' => $error_details
+		);
 	}
 	
 	/**
-	 * Subscribe profiles that are safe to subscribe (no historical import issues)
+	 * Try bulk subscription approach
 	 * 
 	 * @param array $emails Array of email addresses
 	 * @param string $list_id The list ID to subscribe to
-	 * @return array Results
+	 * @return array Result with success flag
 	 */
-	private function subscribe_safe_profiles($emails, $list_id) {
-		$total_emails = count($emails);
-		$subscribed = 0;
-		$errors = 0;
+	private function try_bulk_subscribe($emails, $list_id) {
+		// Use a very old consented_at date to minimize conflicts
+		$consented_at = date('c', strtotime('2010-01-01 00:00:00'));
 		
-		error_log('Klaviyo Sync Debug - Subscribing ' . $total_emails . ' safe emails');
-		
-		// Process emails individually for better error handling
+		$subscriptions_data = array();
 		foreach ($emails as $email) {
-			$body = array(
-				'data' => array(
-					'type' => 'profile-subscription-bulk-create-job',
-					'attributes' => array(
-						'historical_import' => false, // Use false to avoid backdating issues
-						'profiles' => array(
-							'data' => array(
-								array(
-									'type' => 'profile',
-									'attributes' => array(
-										'email' => $email,
-										'subscriptions' => array(
-											'email' => array(
-												'marketing' => array(
-													'consent' => 'SUBSCRIBED'
-												)
+			$subscriptions_data[] = array(
+				'type' => 'profile',
+				'attributes' => array(
+					'email' => $email,
+					'subscriptions' => array(
+						'email' => array(
+							'marketing' => array(
+								'consent' => 'SUBSCRIBED',
+								'consented_at' => $consented_at
+							)
+						)
+					)
+				)
+			);
+		}
+		
+		$body = array(
+			'data' => array(
+				'type' => 'profile-subscription-bulk-create-job',
+				'attributes' => array(
+					'historical_import' => true,
+					'profiles' => array(
+						'data' => $subscriptions_data
+					)
+				),
+				'relationships' => array(
+					'list' => array(
+						'data' => array(
+							'type' => 'list',
+							'id' => $list_id
+						)
+					)
+				)
+			)
+		);
+		
+		$result = $this->make_api_request('profile-subscription-bulk-create-jobs/', 'POST', $body);
+		
+		if (is_wp_error($result)) {
+			error_log('Klaviyo bulk subscribe attempt failed: ' . $result->get_error_message());
+			return array('success' => false, 'error' => $result->get_error_message());
+		}
+		
+		return array('success' => true);
+	}
+	
+	/**
+	 * Subscribe an individual email with comprehensive error handling
+	 * 
+	 * @param string $email Email address
+	 * @param string $list_id The list ID to subscribe to
+	 * @return array Result with status and any error
+	 */
+	private function subscribe_individual_email($email, $list_id) {
+		// First, try to get the profile's current subscription status
+		$profile_info = $this->get_detailed_profile_info($email);
+		
+		if ($profile_info === false) {
+			// Profile doesn't exist, safe to subscribe with historical import
+			return $this->create_new_subscription($email, $list_id);
+		}
+		
+		// Profile exists, check current subscription status
+		$current_status = $this->extract_subscription_status($profile_info);
+		
+		switch ($current_status['status']) {
+			case 'never_subscribed':
+				// Safe to subscribe
+				return $this->create_new_subscription($email, $list_id);
+				
+			case 'subscribed':
+				// Already subscribed, just add to list if not already there
+				return $this->add_to_list_only($email, $list_id);
+				
+			case 'unsubscribed':
+				// Previously unsubscribed - don't re-subscribe to respect their choice
+				return array(
+					'status' => 'already_subscribed', // Count as "handled" but don't re-subscribe
+					'note' => 'Previously unsubscribed, skipped to respect consent'
+				);
+				
+			default:
+				// Unknown status - likely a newly created profile that hasn't propagated yet
+				// Treat as new profile and subscribe with historical import
+				return $this->create_new_subscription($email, $list_id);
+		}
+	}
+	
+	/**
+	 * Get detailed profile information including subscription history
+	 * 
+	 * @param string $email Email address
+	 * @return array|false Profile data or false if not found
+	 */
+	private function get_detailed_profile_info($email) {
+		$encoded_email = urlencode($email);
+		$result = $this->make_api_request("profiles/?filter=equals(email,\"{$encoded_email}\")&fields[profile]=email,subscriptions");
+		
+		if (is_wp_error($result) || empty($result['data'])) {
+			return false;
+		}
+		
+		return $result['data'][0];
+	}
+	
+	/**
+	 * Extract subscription status from profile data
+	 * 
+	 * @param array $profile_data Profile data from API
+	 * @return array Status information
+	 */
+	private function extract_subscription_status($profile_data) {
+		if (!isset($profile_data['attributes']['subscriptions']['email']['marketing'])) {
+			return array('status' => 'never_subscribed');
+		}
+		
+		$marketing = $profile_data['attributes']['subscriptions']['email']['marketing'];
+		
+		$consent = isset($marketing['consent']) ? $marketing['consent'] : 'NEVER_SUBSCRIBED';
+		$consented_at = isset($marketing['consented_at']) ? $marketing['consented_at'] : null;
+		
+		switch ($consent) {
+			case 'SUBSCRIBED':
+				return array(
+					'status' => 'subscribed',
+					'consented_at' => $consented_at
+				);
+			case 'UNSUBSCRIBED':
+				return array(
+					'status' => 'unsubscribed',
+					'consented_at' => $consented_at
+				);
+			default:
+				return array('status' => 'never_subscribed');
+		}
+	}
+	
+	/**
+	 * Create a new subscription for a profile
+	 * 
+	 * @param string $email Email address
+	 * @param string $list_id List ID
+	 * @return array Result
+	 */
+	private function create_new_subscription($email, $list_id) {
+		$consented_at = date('c', strtotime('2010-01-01 00:00:00'));
+		
+		$body = array(
+			'data' => array(
+				'type' => 'profile-subscription-bulk-create-job',
+				'attributes' => array(
+					'historical_import' => true, // Bypasses double opt-in emails
+					'profiles' => array(
+						'data' => array(
+							array(
+								'type' => 'profile',
+								'attributes' => array(
+									'email' => $email,
+									'subscriptions' => array(
+										'email' => array(
+											'marketing' => array(
+												'consent' => 'SUBSCRIBED',
+												'consented_at' => $consented_at // Required when historical_import is true
 											)
 										)
 									)
 								)
 							)
 						)
-					),
-					'relationships' => array(
-						'list' => array(
-							'data' => array(
-								'type' => 'list',
-								'id' => $list_id
-							)
+					)
+				),
+				'relationships' => array(
+					'list' => array(
+						'data' => array(
+							'type' => 'list',
+							'id' => $list_id
 						)
 					)
 				)
+			)
+		);
+		
+		$result = $this->make_api_request('profile-subscription-bulk-create-jobs/', 'POST', $body);
+		
+		if (is_wp_error($result)) {
+			return array(
+				'status' => 'error',
+				'error' => $result->get_error_message()
 			);
-			
-			$result = $this->make_api_request('profile-subscription-bulk-create-jobs/', 'POST', $body);
-			
-			if (is_wp_error($result)) {
-				error_log('Klaviyo safe subscription error for ' . $email . ': ' . $result->get_error_message());
-				$errors++;
-			} else {
-				$subscribed++;
-			}
-			
-			// Small delay to avoid rate limiting
-			usleep(200000); // 200ms delay
 		}
 		
-		return array(
-			'subscribed' => $subscribed,
-			'errors' => $errors
+		return array('status' => 'subscribed');
+	}
+	
+	/**
+	 * Add profile to list without changing subscription status
+	 * 
+	 * @param string $email Email address  
+	 * @param string $list_id List ID
+	 * @return array Result
+	 */
+	private function add_to_list_only($email, $list_id) {
+		// Use the relationships endpoint to add profile to list
+		$body = array(
+			'data' => array(
+				array(
+					'type' => 'profile',
+					'attributes' => array(
+						'email' => $email
+					)
+				)
+			)
 		);
+		
+		$result = $this->make_api_request("lists/{$list_id}/relationships/profiles/", 'POST', $body);
+		
+		if (is_wp_error($result)) {
+			return array(
+				'status' => 'error',
+				'error' => $result->get_error_message()
+			);
+		}
+		
+		return array('status' => 'already_subscribed');
 	}
 	
 	/**
@@ -1536,107 +1711,6 @@ class CSD_Klaviyo_Integration {
 		return array(
 			'processed' => $processed,
 			'errors' => $errors
-		);
-	}
-	
-	/**
-	 * Bulk subscribe profiles to email marketing using Klaviyo's bulk subscribe API
-	 * 
-	 * @param array $emails Array of email addresses
-	 * @param string $list_id The list ID to subscribe to
-	 * @return array|WP_Error Results or error
-	 */
-	private function bulk_subscribe_profiles($emails, $list_id) {
-		// Remove duplicates from the email array
-		$unique_emails = array_unique($emails);
-		$total_emails = count($unique_emails);
-		$duplicates_removed = count($emails) - $total_emails;
-		
-		if ($duplicates_removed > 0) {
-			error_log('Klaviyo Sync Debug - Removed ' . $duplicates_removed . ' duplicate emails from subscription list');
-		}
-		
-		$processed = 0;
-		$errors = 0;
-		$batch_size = 1000; // Klaviyo's bulk subscribe supports up to 1000 profiles
-		
-		error_log('Klaviyo Sync Debug - Starting bulk subscription of ' . $total_emails . ' unique emails');
-		
-		// Set consented_at to a time in the past (required for historical_import: true)
-		$consented_at = date('c', strtotime('2018-01-01 00:00:00')); // January 1, 2020
-		
-		for ($i = 0; $i < $total_emails; $i += $batch_size) {
-			$email_batch = array_slice($unique_emails, $i, $batch_size);
-			$batch_number = floor($i / $batch_size) + 1;
-			
-			error_log('Klaviyo Sync Debug - Processing bulk subscription batch ' . $batch_number . ' with ' . count($email_batch) . ' emails');
-			
-			// Prepare the subscription data according to Klaviyo's bulk subscribe API
-			$subscriptions_data = array();
-			foreach ($email_batch as $email) {
-				$subscriptions_data[] = array(
-					'type' => 'profile',
-					'attributes' => array(
-						'email' => $email,
-						'subscriptions' => array(
-							'email' => array(
-								'marketing' => array(
-									'consent' => 'SUBSCRIBED',
-									'consented_at' => $consented_at
-								)
-							)
-						)
-					)
-				);
-			}
-			
-			$body = array(
-				'data' => array(
-					'type' => 'profile-subscription-bulk-create-job',
-					'attributes' => array(
-						'historical_import' => true,
-						'profiles' => array(
-							'data' => $subscriptions_data
-						)
-					),
-					'relationships' => array(
-						'list' => array(
-							'data' => array(
-								'type' => 'list',
-								'id' => $list_id
-							)
-						)
-					)
-				)
-			);
-			
-			error_log('Klaviyo Sync Debug - Sending bulk subscription request for batch ' . $batch_number);
-			
-			$result = $this->make_api_request('profile-subscription-bulk-create-jobs/', 'POST', $body);
-			
-			if (is_wp_error($result)) {
-				error_log('Klaviyo bulk subscription error for batch ' . $batch_number . ': ' . $result->get_error_message());
-				$errors += count($email_batch);
-			} else {
-				error_log('Klaviyo Sync Debug - Successfully submitted bulk subscription job for batch ' . $batch_number);
-				$processed += count($email_batch);
-				
-				// Optional: You could store the job ID and check status later
-				if (isset($result['data']['id'])) {
-					error_log('Klaviyo Sync Debug - Bulk subscription job ID: ' . $result['data']['id']);
-				}
-			}
-			
-			// Add delay between batches to avoid rate limiting
-			if ($i + $batch_size < $total_emails) {
-				sleep(1); // 1 second delay between batches
-			}
-		}
-		
-		return array(
-			'processed' => $processed,
-			'errors' => $errors,
-			'duplicates_removed' => $duplicates_removed
 		);
 	}
 	
