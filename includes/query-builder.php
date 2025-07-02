@@ -79,6 +79,7 @@ class CSD_Query_Builder {
 				'athletics_website' => array('label' => 'Athletics Website', 'type' => 'text'),
 				'athletics_phone' => array('label' => 'Athletics Phone', 'type' => 'text'),
 				'football_division' => array('label' => 'Football Division', 'type' => 'text'),
+				'school_logo_png' => array('label' => 'School Logo PNG', 'type' => 'text'),
 				'date_created' => array('label' => 'Date Created', 'type' => 'date'),
 				'date_updated' => array('label' => 'Date Updated', 'type' => 'date')
 			)
@@ -91,6 +92,10 @@ class CSD_Query_Builder {
 			'fields' => array(
 				'id' => array('label' => 'ID', 'type' => 'number'),
 				'full_name' => array('label' => 'Full Name', 'type' => 'text'),
+				'honorific' => array('label' => 'Honorific', 'type' => 'text'),
+				'first_name' => array('label' => 'First Name', 'type' => 'text'),
+				'last_name' => array('label' => 'Last Name', 'type' => 'text'),
+				'suffix' => array('label' => 'Suffix', 'type' => 'text'),
 				'title' => array('label' => 'Title', 'type' => 'text'),
 				'sport_department' => array('label' => 'Sport/Department', 'type' => 'text'),
 				'email' => array('label' => 'Email', 'type' => 'text'),
@@ -1104,6 +1109,65 @@ class CSD_Query_Builder {
 				min-width: 70px;
 			}
 			
+			/* Logo column specific styles */
+			.csd-results-table-wrapper td:has(.csd-logo-preview) {
+				white-space: normal !important;
+				min-width: 120px;
+				max-width: 200px;
+				padding: 8px;
+			}
+			
+			.csd-logo-preview {
+				display: flex !important;
+				align-items: center !important;
+				gap: 8px !important;
+				flex-wrap: nowrap !important;
+			}
+			
+			.csd-logo-preview img {
+				flex-shrink: 0 !important;
+				max-width: 40px !important;
+				max-height: 40px !important;
+				object-fit: contain !important;
+				border: 1px solid #ddd !important;
+				border-radius: 3px !important;
+			}
+			
+			.csd-logo-preview a {
+				font-size: 11px !important;
+				color: #666 !important;
+				text-decoration: none !important;
+				overflow: hidden !important;
+				text-overflow: ellipsis !important;
+				white-space: nowrap !important;
+				flex: 1 !important;
+				min-width: 0 !important;
+			}
+			
+			.csd-logo-preview a:hover {
+				color: #0073aa !important;
+				text-decoration: underline !important;
+			}
+			
+			/* Alternative fallback for browsers that don't support :has() */
+			th[data-column*="logo"] + td,
+			td:nth-child(n) {
+				/* This will be applied to logo columns based on content */
+			}
+			
+			/* Specific styling for school logo column */
+			th[data-column="schools_school_logo_png"] {
+				min-width: 120px;
+			}
+			
+			td:has(.csd-logo-preview),
+			.csd-logo-cell {
+				white-space: normal !important;
+				min-width: 120px !important;
+				max-width: 200px !important;
+				vertical-align: middle !important;
+			}
+			
 			@media screen and (max-width: 782px) {
 				.csd-pagination {
 					flex-direction: column;
@@ -1652,7 +1716,12 @@ class CSD_Query_Builder {
 						'Athletics Website': 'schools_athletics_website',
 						'Athletics Phone': 'schools_athletics_phone',
 						'Football Division': 'schools_football_division',
+						'School Logo': 'schools_school_logo_png',
 						'Full Name': 'staff_full_name',
+						'Honorific': 'staff_honorific',
+						'First Name': 'staff_first_name',
+						'Last Name': 'staff_last_name',
+						'Suffix': 'staff_suffix',
 						'Title': 'staff_title',
 						'Sport Department': 'staff_sport_department',
 						'Email': 'staff_email',
@@ -3109,10 +3178,15 @@ class CSD_Query_Builder {
 			'schools_athletics_website' => 'Athletics Website',
 			'schools_athletics_phone' => 'Athletics Phone',
 			'schools_football_division' => 'Football Division',
+			'schools_school_logo_png' => 'School Logo',
 			'schools_date_created' => 'School Date Created',
 			'schools_date_updated' => 'School Date Updated',
 			'staff_id' => 'Staff ID',
 			'staff_full_name' => 'Full Name',
+			'staff_honorific' => 'Honorific',
+			'staff_first_name' => 'First Name',
+			'staff_last_name' => 'Last Name',
+			'staff_suffix' => 'Suffix',
 			'staff_title' => 'Title',
 			'staff_sport_department' => 'Sport/Department',
 			'staff_email' => 'Email',
@@ -3155,8 +3229,39 @@ class CSD_Query_Builder {
 			return date_i18n(get_option('date_format') . ' ' . get_option('time_format'), strtotime($value));
 		}
 		
-		// Format URLs
-		if (strpos($key, 'website') !== false || strpos($key, 'url') !== false) {
+		// Special handling for logo fields - check by column name pattern
+		if (strpos($key, 'logo') !== false) {
+			// Check if it's a URL or path that could be an image
+			if (!empty($value) && (
+				filter_var($value, FILTER_VALIDATE_URL) || 
+				strpos($value, '/') !== false || 
+				strpos($value, '.png') !== false || 
+				strpos($value, '.jpg') !== false || 
+				strpos($value, '.jpeg') !== false || 
+				strpos($value, '.gif') !== false || 
+				strpos($value, '.svg') !== false
+			)) {
+				// Build the full URL if it's a relative path
+				$image_url = $value;
+				if (!filter_var($value, FILTER_VALIDATE_URL) && strpos($value, '/') === 0) {
+					// It's a path starting with /, make it a full URL
+					$image_url = home_url($value);
+				} elseif (!filter_var($value, FILTER_VALIDATE_URL) && strpos($value, '/') !== false) {
+					// It's a relative path, make it a full URL
+					$image_url = home_url('/' . ltrim($value, '/'));
+				}
+				
+				return '<div class="csd-logo-preview" style="display: flex; align-items: center; gap: 8px;">' . 
+					   '<img src="' . esc_url($image_url) . '" alt="Logo" style="max-width:40px;max-height:40px;object-fit:contain;border:1px solid #ddd;border-radius:3px;" onerror="this.style.display=\'none\'">' . 
+					   '<a href="' . esc_url($image_url) . '" target="_blank" style="font-size:11px;color:#666;text-decoration:none;" title="' . esc_attr($value) . '">' . 
+					   (strlen($value) > 30 ? '...' . substr(basename($value), -25) : esc_html(basename($value))) . 
+					   '</a>' . 
+					   '</div>';
+			}
+		}
+		
+		// Format other URLs (websites)
+		if ((strpos($key, 'website') !== false || strpos($key, 'url') !== false) && strpos($key, 'logo') === false) {
 			if (filter_var($value, FILTER_VALIDATE_URL)) {
 				return '<a href="' . esc_url($value) . '" target="_blank">' . esc_html($value) . '</a>';
 			}

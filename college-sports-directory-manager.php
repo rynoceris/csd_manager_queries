@@ -30,6 +30,7 @@ require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/database-connection.php');
 require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/query-builder.php');
 require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/snapshot-tool.php');
 require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/klaviyo-integration.php');
+require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/query-change-detection.php');
 
 /**
  * Add this standalone activation function
@@ -300,6 +301,28 @@ function csd_ajax_get_klaviyo_cache_status_wrapper() {
 	$klaviyo->ajax_get_cache_status();
 }
 
+// Query Change Detection AJAX handlers
+add_action('wp_ajax_csd_toggle_query_monitoring', 'csd_ajax_toggle_query_monitoring_wrapper');
+function csd_ajax_toggle_query_monitoring_wrapper() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/query-change-detection.php');
+	$change_detection = new CSD_Query_Change_Detection();
+	$change_detection->ajax_toggle_monitoring();
+}
+
+add_action('wp_ajax_csd_run_manual_monitoring', 'csd_ajax_run_manual_monitoring_wrapper');
+function csd_ajax_run_manual_monitoring_wrapper() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/query-change-detection.php');
+	$change_detection = new CSD_Query_Change_Detection();
+	$change_detection->ajax_run_manual_monitoring();
+}
+
+add_action('wp_ajax_csd_get_monitoring_history', 'csd_ajax_get_monitoring_history_wrapper');
+function csd_ajax_get_monitoring_history_wrapper() {
+	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/query-change-detection.php');
+	$change_detection = new CSD_Query_Change_Detection();
+	$change_detection->ajax_get_monitoring_history();
+}
+
 // Add these functions to your plugin file:
 function csd_ajax_load_user_query() {
 	require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/user-queries.php');
@@ -445,6 +468,11 @@ class CSD_Manager {
 		$query_builder = new CSD_Query_Builder();
 		$query_builder->create_saved_queries_table();
 		
+		// CREATE QUERY CHANGE DETECTION TABLES
+		require_once(CSD_MANAGER_PLUGIN_DIR . 'includes/query-change-detection.php');
+		$change_detection = new CSD_Query_Change_Detection();
+		$change_detection->create_monitoring_tables();
+		
 		// Flush rewrite rules
 		flush_rewrite_rules();
 	}
@@ -501,6 +529,9 @@ function csd_manager_init() {
 	
 	// Initialize Klaviyo integration
 	new CSD_Klaviyo_Integration();
+	
+	// Initialize Query Change Detection
+	new CSD_Query_Change_Detection();
 }
 add_action('plugins_loaded', 'csd_manager_init');
 

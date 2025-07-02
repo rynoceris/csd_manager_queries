@@ -1282,7 +1282,7 @@ class CSD_Klaviyo_Integration {
 				'duplicates_merged' => $duplicates_found,
 				'total_records' => $total_records,
 				'validation_errors' => array_slice($validation_errors, 0, 10),
-				'list_url' => "https://www.klaviyo.com/lists/list/{$list_id}"
+				'list_url' => "https://www.klaviyo.com/list/{$list_id}"
 			);
 			
 			if (!empty($subscription_results['error_details'])) {

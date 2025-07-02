@@ -23,7 +23,10 @@ function csd_get_table_names() {
 		'school_staff' => 'csd_school_staff',
 		'shortcode_views' => 'csd_shortcode_views', // This table will be created by the plugin
 		'saved_queries' => 'csd_saved_queries',
-		'user_queries' => 'csd_user_queries'
+		'user_queries' => 'csd_user_queries',
+		'query_monitoring' => 'csd_query_monitoring',
+		'query_changes' => 'csd_query_changes',
+		'query_snapshots' => 'csd_query_snapshots'
 	);
 }
 
