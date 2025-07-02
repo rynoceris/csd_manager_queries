@@ -22,6 +22,17 @@ class CSD_Query_Change_Detection {
 		// Hook into WordPress cron system
 		add_action('init', array($this, 'schedule_weekly_monitoring'));
 		add_action('csd_weekly_query_monitoring', array($this, 'run_weekly_monitoring'));
+		add_action('init', array($this, 'schedule_weekly_monitoring'));
+		add_action('csd_weekly_query_monitoring', array($this, 'run_weekly_monitoring'));
+		add_action('admin_menu', array($this, 'add_monitoring_page'));
+		add_action('wp_ajax_csd_toggle_query_monitoring', array($this, 'ajax_toggle_monitoring'));
+		add_action('wp_ajax_csd_run_manual_monitoring', array($this, 'ajax_run_manual_monitoring'));
+		add_action('wp_ajax_csd_get_monitoring_history', array($this, 'ajax_get_monitoring_history'));
+		
+		// NEW: Add Gmail SMTP settings hooks
+		add_action('admin_menu', array($this, 'add_smtp_settings_page'));
+		add_action('admin_init', array($this, 'register_smtp_settings'));
+		add_action('wp_ajax_csd_test_smtp_email', array($this, 'ajax_test_smtp_email'));
 		
 		// Admin interface hooks
 		add_action('admin_menu', array($this, 'add_monitoring_page'));
@@ -241,7 +252,7 @@ class CSD_Query_Change_Detection {
 	}
 	
 	/**
-	 * Execute a saved query and return the data
+	 * Execute a saved query and return the data - FIXED VERSION
 	 */
 	private function execute_saved_query($query_settings) {
 		$settings = json_decode($query_settings, true);
@@ -258,6 +269,8 @@ class CSD_Query_Change_Detection {
 			if (isset($settings['custom_sql']) && !empty($settings['custom_sql'])) {
 				// Execute custom SQL
 				$sql = $settings['custom_sql'];
+				// Clean the SQL to fix hex placeholders and other issues
+				$sql = $this->clean_sql_for_monitoring($sql);
 				// Remove any LIMIT clauses to get all data
 				$sql = $this->remove_pagination_from_sql($sql);
 			} else {
@@ -267,6 +280,9 @@ class CSD_Query_Change_Detection {
 				
 				// Build SQL from form settings without pagination
 				$sql = $query_builder->build_sql_query($settings, false); // No pagination
+				
+				// Clean the SQL to fix any issues
+				$sql = $this->clean_sql_for_monitoring($sql);
 				
 				// Restore original limit for future use (don't modify the original settings)
 				if ($original_limit !== null) {
@@ -286,6 +302,41 @@ class CSD_Query_Change_Detection {
 			error_log('CSD Query Monitoring: Error executing query - ' . $e->getMessage());
 			throw $e;
 		}
+	}
+	
+	/**
+	 * Clean SQL query for monitoring to handle escaped quotes and hex placeholders
+	 * 
+	 * @param string $sql The SQL query to clean
+	 * @return string Cleaned SQL query
+	 */
+	private function clean_sql_for_monitoring($sql) {
+		// Make sure we have a string
+		if (!is_string($sql)) {
+			return '';
+		}
+		
+		// Trim whitespace
+		$sql = trim($sql);
+		
+		// Fix escaped quotes that can come from AJAX or CodeMirror
+		$sql = str_replace("\'", "'", $sql);
+		$sql = str_replace('\"', '"', $sql);
+		
+		// Remove hexadecimal artifacts that might appear in LIKE clauses
+		// This is the key fix for your monitoring system
+		$sql = preg_replace('/{[0-9a-f]+}/', '%', $sql);
+		
+		// Remove any double %% that might cause issues
+		$sql = str_replace('%%', '%', $sql);
+		
+		// Clean up any potential double escaping issues
+		$sql = stripslashes($sql);
+		
+		// Additional cleaning for AJAX transmission issues
+		$sql = wp_unslash($sql);
+		
+		return $sql;
 	}
 	
 	/**
@@ -508,7 +559,7 @@ class CSD_Query_Change_Detection {
 	}
 	
 	/**
-	 * Send change notifications to assigned users
+	 * Updated send_change_notifications method with Gmail SMTP
 	 */
 	private function send_change_notifications($query_id, $query_name, $changes, $current_data, $change_record_id) {
 		$wpdb = csd_db_connection();
@@ -535,11 +586,11 @@ class CSD_Query_Change_Detection {
 		$email_body = $this->create_email_body($query_name, $changes);
 		
 		foreach ($assigned_users as $user) {
-			$sent = wp_mail(
+			$sent = $this->send_gmail_smtp_email(
 				$user->user_email,
+				$user->display_name,
 				$subject,
 				$email_body,
-				array('Content-Type: text/html; charset=UTF-8'),
 				array($changes_csv, $current_data_csv)
 			);
 			
@@ -558,12 +609,137 @@ class CSD_Query_Change_Detection {
 		);
 		
 		// Clean up temporary CSV files
-		unlink($changes_csv);
-		unlink($current_data_csv);
+		if (file_exists($changes_csv)) {
+			unlink($changes_csv);
+		}
+		if (file_exists($current_data_csv)) {
+			unlink($current_data_csv);
+		}
 	}
 	
 	/**
-	 * Create CSV file with changes
+	 * Send email using Gmail SMTP
+	 */
+	private function send_gmail_smtp_email($to_email, $to_name, $subject, $body, $attachments = array()) {
+		// Load PHPMailer
+		if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
+			require_once ABSPATH . WPINC . '/PHPMailer/PHPMailer.php';
+			require_once ABSPATH . WPINC . '/PHPMailer/SMTP.php';
+			require_once ABSPATH . WPINC . '/PHPMailer/Exception.php';
+		}
+		
+		$mail = new PHPMailer\PHPMailer\PHPMailer(true);
+		
+		try {
+			// Get Gmail SMTP settings
+			$smtp_settings = $this->get_gmail_smtp_settings();
+			
+			if (!$smtp_settings || !$smtp_settings['enabled']) {
+				error_log('CSD Query Monitoring: Gmail SMTP not configured, falling back to wp_mail');
+				return $this->send_fallback_email($to_email, $subject, $body, $attachments);
+			}
+			
+			// Server settings
+			$mail->isSMTP();
+			$mail->Host = 'smtp.gmail.com';
+			$mail->SMTPAuth = true;
+			$mail->Username = $smtp_settings['username'];
+			$mail->Password = $smtp_settings['password'];
+			$mail->SMTPSecure = PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+			$mail->Port = 587;
+			
+			// Recipients
+			$mail->setFrom($smtp_settings['from_email'], $smtp_settings['from_name']);
+			$mail->addAddress($to_email, $to_name);
+			$mail->addReplyTo($smtp_settings['from_email'], $smtp_settings['from_name']);
+			
+			// Content
+			$mail->isHTML(true);
+			$mail->Subject = $subject;
+			$mail->Body = $body;
+			$mail->AltBody = strip_tags($body);
+			
+			// Add attachments
+			foreach ($attachments as $attachment) {
+				if (file_exists($attachment)) {
+					$mail->addAttachment($attachment);
+				}
+			}
+			
+			// Send the email
+			$result = $mail->send();
+			
+			if ($result) {
+				error_log('CSD Query Monitoring: Gmail SMTP email sent successfully to ' . $to_email);
+				return true;
+			} else {
+				error_log('CSD Query Monitoring: Gmail SMTP failed to send email to ' . $to_email);
+				return false;
+			}
+			
+		} catch (Exception $e) {
+			error_log('CSD Query Monitoring: Gmail SMTP Error: ' . $e->getMessage());
+			
+			// Fallback to wp_mail
+			error_log('CSD Query Monitoring: Falling back to wp_mail for ' . $to_email);
+			return $this->send_fallback_email($to_email, $subject, $body, $attachments);
+		}
+	}
+	
+	/**
+	 * Fallback email using wp_mail
+	 */
+	private function send_fallback_email($to_email, $subject, $body, $attachments = array()) {
+		$headers = array('Content-Type: text/html; charset=UTF-8');
+		
+		$sent = wp_mail(
+			$to_email,
+			$subject,
+			$body,
+			$headers,
+			$attachments
+		);
+		
+		if ($sent) {
+			error_log('CSD Query Monitoring: Fallback wp_mail sent successfully to ' . $to_email);
+		} else {
+			error_log('CSD Query Monitoring: Fallback wp_mail failed to send to ' . $to_email);
+		}
+		
+		return $sent;
+	}
+	
+	/**
+	 * Get Gmail SMTP settings
+	 */
+	private function get_gmail_smtp_settings() {
+		// You can store these in WordPress options or define them as constants
+		// For security, consider using WordPress constants in wp-config.php
+		
+		$settings = array(
+			'enabled' => defined('CSD_GMAIL_SMTP_ENABLED') ? CSD_GMAIL_SMTP_ENABLED : false,
+			'username' => defined('CSD_GMAIL_SMTP_USERNAME') ? CSD_GMAIL_SMTP_USERNAME : '',
+			'password' => defined('CSD_GMAIL_SMTP_PASSWORD') ? CSD_GMAIL_SMTP_PASSWORD : '',
+			'from_email' => defined('CSD_GMAIL_SMTP_FROM_EMAIL') ? CSD_GMAIL_SMTP_FROM_EMAIL : get_option('admin_email'),
+			'from_name' => defined('CSD_GMAIL_SMTP_FROM_NAME') ? CSD_GMAIL_SMTP_FROM_NAME : get_bloginfo('name')
+		);
+		
+		// Alternative: Get from WordPress options (less secure but more flexible)
+		if (!$settings['enabled']) {
+			$settings = array(
+				'enabled' => get_option('csd_gmail_smtp_enabled', false),
+				'username' => get_option('csd_gmail_smtp_username', ''),
+				'password' => get_option('csd_gmail_smtp_password', ''),
+				'from_email' => get_option('csd_gmail_smtp_from_email', get_option('admin_email')),
+				'from_name' => get_option('csd_gmail_smtp_from_name', get_bloginfo('name'))
+			);
+		}
+		
+		return $settings;
+	}
+	
+	/**
+	 * Create CSV file with changes - IMPROVED VERSION
 	 */
 	private function create_changes_csv($changes) {
 		$upload_dir = wp_upload_dir();
@@ -576,37 +752,50 @@ class CSD_Query_Change_Detection {
 		$filename = $temp_dir . 'query-changes-' . date('Y-m-d-H-i-s') . '-' . uniqid() . '.csv';
 		$file = fopen($filename, 'w');
 		
+		if (!$file) {
+			error_log('CSD Query Monitoring: Failed to create changes CSV file: ' . $filename);
+			return false;
+		}
+		
 		// Write BOM for UTF-8
 		fprintf($file, chr(0xEF).chr(0xBB).chr(0xBF));
 		
-		// Write header
-		fputcsv($file, array('Change Type', 'Record Data', 'Field Changes'));
+		// Write summary header
+		fputcsv($file, array('CHANGE SUMMARY'));
+		fputcsv($file, array('Total Changes', $changes['total_changes']));
+		fputcsv($file, array('New Records', $changes['new_count']));
+		fputcsv($file, array('Modified Records', $changes['modified_count']));
+		fputcsv($file, array('Deleted Records', $changes['deleted_count']));
+		fputcsv($file, array('Previous Total', $changes['previous_total']));
+		fputcsv($file, array('Current Total', $changes['current_total']));
+		fputcsv($file, array('Date', current_time('mysql')));
+		fputcsv($file, array('')); // Empty row
 		
-		// Write new records
-		foreach ($changes['new_records'] as $record) {
-			fputcsv($file, array(
-				'NEW',
-				json_encode($record),
-				''
-			));
+		// If no changes, just return the summary
+		if ($changes['total_changes'] == 0) {
+			fputcsv($file, array('No changes detected'));
+			fclose($file);
+			return $filename;
 		}
 		
-		// Write modified records
-		foreach ($changes['modified_records'] as $modified) {
-			fputcsv($file, array(
-				'MODIFIED',
-				json_encode($modified['current']),
-				json_encode($modified['changes'])
-			));
+		// Write NEW RECORDS section
+		if (!empty($changes['new_records'])) {
+			fputcsv($file, array('NEW RECORDS (' . count($changes['new_records']) . ')'));
+			$this->write_record_section($file, $changes['new_records'], 'new');
+			fputcsv($file, array('')); // Empty row
 		}
 		
-		// Write deleted records
-		foreach ($changes['deleted_records'] as $record) {
-			fputcsv($file, array(
-				'DELETED',
-				json_encode($record),
-				''
-			));
+		// Write MODIFIED RECORDS section
+		if (!empty($changes['modified_records'])) {
+			fputcsv($file, array('MODIFIED RECORDS (' . count($changes['modified_records']) . ')'));
+			$this->write_modified_record_section($file, $changes['modified_records']);
+			fputcsv($file, array('')); // Empty row
+		}
+		
+		// Write DELETED RECORDS section
+		if (!empty($changes['deleted_records'])) {
+			fputcsv($file, array('DELETED RECORDS (' . count($changes['deleted_records']) . ')'));
+			$this->write_record_section($file, $changes['deleted_records'], 'deleted');
 		}
 		
 		fclose($file);
@@ -614,7 +803,149 @@ class CSD_Query_Change_Detection {
 	}
 	
 	/**
-	 * Create CSV file with current data
+	 * Write a section of records to CSV
+	 */
+	private function write_record_section($file, $records, $type) {
+		if (empty($records)) {
+			return;
+		}
+		
+		// Get the first record to determine headers
+		$first_record = reset($records);
+		
+		// Extract key fields for easy scanning
+		$key_fields = $this->get_key_fields($first_record);
+		
+		if (!empty($key_fields)) {
+			// Write header for key fields
+			fputcsv($file, array_keys($key_fields));
+			
+			// Write key field data for each record
+			foreach ($records as $record) {
+				$key_data = $this->get_key_fields($record);
+				fputcsv($file, array_values($key_data));
+			}
+			
+			fputcsv($file, array('')); // Empty row before full data
+		}
+		
+		// Write full data section header
+		fputcsv($file, array('FULL RECORD DATA'));
+		
+		// Write headers
+		$headers = array_keys($first_record);
+		fputcsv($file, $headers);
+		
+		// Write data rows
+		foreach ($records as $record) {
+			fputcsv($file, array_values($record));
+		}
+	}
+	
+	/**
+	 * Write modified records section with change details
+	 */
+	private function write_modified_record_section($file, $modified_records) {
+		if (empty($modified_records)) {
+			return;
+		}
+		
+		// Write change summary header
+		fputcsv($file, array('Record ID/Key', 'Changed Fields', 'Summary of Changes'));
+		
+		foreach ($modified_records as $modified) {
+			$current = $modified['current'];
+			$changes = $modified['changes'];
+			
+			// Create record identifier
+			$record_id = $this->get_record_identifier($current);
+			
+			// Get list of changed fields
+			$changed_fields = array_keys($changes);
+			
+			// Create summary of changes
+			$change_summary = array();
+			foreach ($changes as $field => $change) {
+				$from = $change['from'] ?? 'NULL';
+				$to = $change['to'] ?? 'NULL';
+				$change_summary[] = "$field: '$from' → '$to'";
+			}
+			
+			fputcsv($file, array(
+				$record_id,
+				implode(', ', $changed_fields),
+				implode(' | ', $change_summary)
+			));
+		}
+		
+		fputcsv($file, array('')); // Empty row
+		
+		// Write full modified records data
+		fputcsv($file, array('FULL MODIFIED RECORDS DATA'));
+		
+		if (!empty($modified_records)) {
+			$first_record = reset($modified_records)['current'];
+			$headers = array_keys($first_record);
+			fputcsv($file, $headers);
+			
+			foreach ($modified_records as $modified) {
+				fputcsv($file, array_values($modified['current']));
+			}
+		}
+	}
+	
+	/**
+	 * Get key fields for easy identification of records
+	 */
+	private function get_key_fields($record) {
+		$key_fields = array();
+		
+		// Define the most important fields to show first
+		$important_fields = array(
+			'staff_full_name',
+			'staff_title', 
+			'staff_email',
+			'staff_sport_department',
+			'schools_school_name',
+			'staff_id',
+			'schools_id'
+		);
+		
+		foreach ($important_fields as $field) {
+			if (isset($record[$field]) && $record[$field] !== null && $record[$field] !== '') {
+				$key_fields[$field] = $record[$field];
+			}
+		}
+		
+		return $key_fields;
+	}
+	
+	/**
+	 * Get a human-readable identifier for a record
+	 */
+	private function get_record_identifier($record) {
+		// Try to create a meaningful identifier
+		if (isset($record['staff_full_name']) && !empty($record['staff_full_name'])) {
+			$id = $record['staff_full_name'];
+			if (isset($record['schools_school_name'])) {
+				$id .= ' (' . $record['schools_school_name'] . ')';
+			}
+			return $id;
+		}
+		
+		if (isset($record['staff_id'])) {
+			return 'Staff ID: ' . $record['staff_id'];
+		}
+		
+		if (isset($record['schools_school_name'])) {
+			return 'School: ' . $record['schools_school_name'];
+		}
+		
+		return 'Record';
+	}
+	
+	/**
+	 * Create current data CSV with better formatting - UPDATED VERSION
 	 */
 	private function create_current_data_csv($current_data) {
 		$upload_dir = wp_upload_dir();
@@ -627,17 +958,47 @@ class CSD_Query_Change_Detection {
 		$filename = $temp_dir . 'current-data-' . date('Y-m-d-H-i-s') . '-' . uniqid() . '.csv';
 		$file = fopen($filename, 'w');
 		
+		if (!$file) {
+			error_log('CSD Query Monitoring: Failed to create current data CSV file: ' . $filename);
+			return false;
+		}
+		
 		// Write BOM for UTF-8
 		fprintf($file, chr(0xEF).chr(0xBB).chr(0xBF));
 		
-		if (!empty($current_data)) {
-			// Write headers
-			fputcsv($file, array_keys($current_data[0]));
-			
-			// Write data
-			foreach ($current_data as $row) {
-				fputcsv($file, $row);
+		// Write summary header
+		fputcsv($file, array('CURRENT QUERY DATA SUMMARY'));
+		fputcsv($file, array('Total Records', count($current_data)));
+		fputcsv($file, array('Export Date', current_time('mysql')));
+		fputcsv($file, array('')); // Empty row
+		
+		if (empty($current_data)) {
+			fputcsv($file, array('No data available'));
+			fclose($file);
+			return $filename;
+		}
+		
+		// Write key fields summary first
+		fputcsv($file, array('KEY FIELDS SUMMARY'));
+		$first_record = reset($current_data);
+		$key_fields = $this->get_key_fields($first_record);
+		
+		if (!empty($key_fields)) {
+			fputcsv($file, array_keys($key_fields));
+			foreach ($current_data as $record) {
+				$key_data = $this->get_key_fields($record);
+				fputcsv($file, array_values($key_data));
 			}
+			fputcsv($file, array('')); // Empty row
+		}
+		
+		// Write full data
+		fputcsv($file, array('COMPLETE DATA'));
+		$headers = array_keys($first_record);
+		fputcsv($file, $headers);
+		
+		foreach ($current_data as $record) {
+			fputcsv($file, array_values($record));
 		}
 		
 		fclose($file);
@@ -645,43 +1006,166 @@ class CSD_Query_Change_Detection {
 	}
 	
 	/**
-	 * Create email body for change notification
+	 * Create email body for change notification - GMAIL-OPTIMIZED VERSION
 	 */
 	private function create_email_body($query_name, $changes) {
-		$body = '<html><body>';
-		$body .= '<h2>Weekly Query Monitoring Report</h2>';
-		$body .= '<p><strong>Query:</strong> ' . esc_html($query_name) . '</p>';
-		$body .= '<p><strong>Report Date:</strong> ' . date('F j, Y') . '</p>';
+		// Get logo settings
+		$logo_settings = $this->get_email_logo_settings();
 		
-		$body .= '<h3>Summary of Changes</h3>';
-		$body .= '<ul>';
-		$body .= '<li><strong>Total Changes Detected:</strong> ' . number_format($changes['total_changes']) . '</li>';
-		$body .= '<li><strong>New Records:</strong> ' . number_format($changes['new_count']) . '</li>';
-		$body .= '<li><strong>Modified Records:</strong> ' . number_format($changes['modified_count']) . '</li>';
-		$body .= '<li><strong>Deleted Records:</strong> ' . number_format($changes['deleted_count']) . '</li>';
-		$body .= '</ul>';
+		// Keep it concise to avoid Gmail clipping (under 102KB)
+		$body = '<!DOCTYPE html>';
+		$body .= '<html>';
+		$body .= '<head>';
+		$body .= '<meta charset="UTF-8">';
+		$body .= '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+		$body .= '<style>';
+		// Minimal, Gmail-friendly CSS
+		$body .= 'body{font-family:Arial,sans-serif;line-height:1.6;color:#333;margin:0;padding:0;background:#f4f4f4}';
+		$body .= '.container{max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden}';
+		// Orange/yellow gradient to match your logo
+		$body .= '.header{background:linear-gradient(135deg, #ff9800 0%, #ffc107 100%);color:#fff;padding:30px;text-align:center}';
+		$body .= '.logo{margin-bottom:15px}';
+		$body .= '.logo img{max-height:50px;max-width:180px;background:rgba(255,255,255,0.2);padding:8px;border-radius:4px}';
+		$body .= '.content{padding:25px}';
+		$body .= '.info-box{background:#f8f9fa;border-left:4px solid #ff9800;padding:15px;margin:15px 0;border-radius:0 4px 4px 0}';
+		$body .= '.summary{background:#fff;border:1px solid #e0e0e0;border-radius:6px;padding:20px;margin:15px 0}';
+		$body .= '.stats{display:table;width:100%;margin:15px 0}';
+		$body .= '.stat{display:table-cell;text-align:center;padding:12px;background:#f8f9fa;border:1px solid #e0e0e0}';
+		$body .= '.stat-num{font-size:20px;font-weight:bold;color:#ff9800;margin-bottom:4px}';
+		$body .= '.stat-label{font-size:11px;color:#666;text-transform:uppercase}';
+		$body .= '.overview{background:#e8f5e8;border:1px solid #c3e6c3;border-radius:6px;padding:18px;margin:15px 0}';
+		$body .= '.highlight{background:linear-gradient(135deg, #ff6b6b 0%, #ffa726 100%);color:#fff;padding:12px;border-radius:4px;margin:10px 0;text-align:center}';
+		$body .= '.footer{background:#f8f9fa;padding:15px;border-top:1px solid #e0e0e0;text-align:center;font-size:11px;color:#666}';
+		$body .= '.no-changes{background:#d4edda;border:1px solid #c3e6cb;color:#155724;padding:12px;border-radius:4px;text-align:center}';
+		$body .= '@media (max-width:600px){.container{margin:0;border-radius:0}.content{padding:15px}.stats{display:block}.stat{display:block;margin:5px 0}}';
+		$body .= '</style>';
+		$body .= '</head>';
+		$body .= '<body>';
 		
-		$body .= '<h3>Data Overview</h3>';
-		$body .= '<ul>';
-		$body .= '<li><strong>Previous Week Total:</strong> ' . number_format($changes['previous_total']) . ' records</li>';
-		$body .= '<li><strong>Current Week Total:</strong> ' . number_format($changes['current_total']) . ' records</li>';
-		$body .= '</ul>';
+		$body .= '<div class="container">';
+		
+		// Header with logo
+		$body .= '<div class="header">';
+		if ($logo_settings['enabled'] && !empty($logo_settings['url'])) {
+			$body .= '<div class="logo">';
+			$body .= '<img src="' . esc_url($logo_settings['url']) . '" alt="' . esc_attr($logo_settings['alt_text']) . '">';
+			$body .= '</div>';
+		}
+		$body .= '<h1 style="margin:0;font-size:22px;">Weekly Query Report</h1>';
+		$body .= '</div>';
+		
+		// Main content
+		$body .= '<div class="content">';
+		
+		// Query information
+		$body .= '<div class="info-box">';
+		$body .= '<p style="margin:4px 0;"><strong>Query:</strong> ' . esc_html($query_name) . '</p>';
+		$body .= '<p style="margin:4px 0;"><strong>Date:</strong> ' . date('M j, Y g:i A T') . '</p>';
+		$body .= '<p style="margin:4px 0;"><strong>System:</strong> ' . esc_html(get_bloginfo('name')) . '</p>';
+		$body .= '</div>';
+		
+		// Changes summary
+		$body .= '<div class="summary">';
+		$body .= '<h3 style="margin-top:0;color:#495057;border-bottom:2px solid #e0e0e0;padding-bottom:8px;">Summary of Changes</h3>';
 		
 		if ($changes['total_changes'] > 0) {
-			$body .= '<h3>Attached Files</h3>';
-			$body .= '<p>This email includes two CSV attachments:</p>';
-			$body .= '<ul>';
-			$body .= '<li><strong>Changes Summary:</strong> Details of all changes detected (new, modified, deleted records)</li>';
-			$body .= '<li><strong>Current Data:</strong> Complete dataset from this week\'s query run</li>';
-			$body .= '</ul>';
+			$body .= '<div class="highlight">';
+			$body .= '<strong>' . number_format($changes['total_changes']) . ' changes detected</strong>';
+			$body .= '</div>';
+		} else {
+			$body .= '<div class="no-changes">';
+			$body .= 'No changes detected - data is stable';
+			$body .= '</div>';
 		}
 		
-		$body .= '<hr>';
-		$body .= '<p><small>This is an automated report from the College Sports Directory Manager plugin. ';
-		$body .= 'You are receiving this because you have been assigned to monitor the "' . esc_html($query_name) . '" query.</small></p>';
-		$body .= '</body></html>';
+		// Stats grid (using table for better Gmail compatibility)
+		$body .= '<div class="stats">';
+		$body .= '<div class="stat">';
+		$body .= '<div class="stat-num">' . number_format($changes['new_count']) . '</div>';
+		$body .= '<div class="stat-label">New</div>';
+		$body .= '</div>';
+		$body .= '<div class="stat">';
+		$body .= '<div class="stat-num">' . number_format($changes['modified_count']) . '</div>';
+		$body .= '<div class="stat-label">Modified</div>';
+		$body .= '</div>';
+		$body .= '<div class="stat">';
+		$body .= '<div class="stat-num">' . number_format($changes['deleted_count']) . '</div>';
+		$body .= '<div class="stat-label">Deleted</div>';
+		$body .= '</div>';
+		$body .= '<div class="stat">';
+		$body .= '<div class="stat-num">' . number_format($changes['total_changes']) . '</div>';
+		$body .= '<div class="stat-label">Total</div>';
+		$body .= '</div>';
+		$body .= '</div>';
+		$body .= '</div>';
+		
+		// Data overview
+		$body .= '<div class="overview">';
+		$body .= '<h3 style="margin-top:0;color:#2e7d32;">Data Overview</h3>';
+		$body .= '<p style="margin:5px 0;"><strong>Previous:</strong> ' . number_format($changes['previous_total']) . ' records</p>';
+		$body .= '<p style="margin:5px 0;"><strong>Current:</strong> ' . number_format($changes['current_total']) . ' records</p>';
+		
+		$net_change = $changes['current_total'] - $changes['previous_total'];
+		if ($net_change > 0) {
+			$body .= '<p style="margin:5px 0;"><strong>Net Change:</strong> <span style="color:#2e7d32;">+' . number_format($net_change) . ' records</span></p>';
+		} elseif ($net_change < 0) {
+			$body .= '<p style="margin:5px 0;"><strong>Net Change:</strong> <span style="color:#d32f2f;">' . number_format($net_change) . ' records</span></p>';
+		} else {
+			$body .= '<p style="margin:5px 0;"><strong>Net Change:</strong> <span style="color:#666;">No change</span></p>';
+		}
+		$body .= '</div>';
+		
+		// Attachments info (only if there are changes)
+		if ($changes['total_changes'] > 0) {
+			$body .= '<div style="background:#fff3cd;border:1px solid #ffeaa7;border-radius:6px;padding:15px;margin:15px 0;">';
+			$body .= '<h3 style="margin-top:0;color:#856404;">Attached Files</h3>';
+			$body .= '<p style="margin:8px 0;">This email includes detailed CSV reports:</p>';
+			$body .= '<ul style="margin:8px 0;padding-left:20px;">';
+			$body .= '<li><strong>Changes Summary:</strong> Detailed breakdown of changes</li>';
+			$body .= '<li><strong>Current Data:</strong> Complete current dataset</li>';
+			$body .= '</ul>';
+			$body .= '</div>';
+		}
+		
+		$body .= '</div>'; // End content
+		
+		// Footer
+		$body .= '<div class="footer">';
+		$body .= '<p style="margin:5px 0;">Automated report from College Sports Directory Manager</p>';
+		$body .= '<p style="margin:5px 0;">You are monitoring: <strong>' . esc_html($query_name) . '</strong></p>';
+		if (!empty($logo_settings['organization_name'])) {
+			$body .= '<p style="margin:5px 0;">&copy; ' . date('Y') . ' ' . esc_html($logo_settings['organization_name']) . '</p>';
+		}
+		$body .= '</div>';
+		
+		$body .= '</div>'; // End container
+		$body .= '</body>';
+		$body .= '</html>';
 		
 		return $body;
+	}
+	
+	/**
+	 * Get email logo settings
+	 */
+	private function get_email_logo_settings() {
+		// Check for constants first (more secure)
+		if (defined('CSD_EMAIL_LOGO_URL')) {
+			return array(
+				'enabled' => true,
+				'url' => CSD_EMAIL_LOGO_URL,
+				'alt_text' => defined('CSD_EMAIL_LOGO_ALT') ? CSD_EMAIL_LOGO_ALT : get_bloginfo('name') . ' Logo',
+				'organization_name' => defined('CSD_EMAIL_ORG_NAME') ? CSD_EMAIL_ORG_NAME : get_bloginfo('name')
+			);
+		}
+		
+		// Fall back to WordPress options
+		return array(
+			'enabled' => get_option('csd_email_logo_enabled', false),
+			'url' => get_option('csd_email_logo_url', ''),
+			'alt_text' => get_option('csd_email_logo_alt', get_bloginfo('name') . ' Logo'),
+			'organization_name' => get_option('csd_email_org_name', get_bloginfo('name'))
+		);
 	}
 	
 	/**
@@ -1273,5 +1757,441 @@ class CSD_Query_Change_Detection {
 		}
 		
 		wp_send_json_success(array('html' => $html));
+	}
+	
+	/**
+	 * Add Gmail SMTP settings page
+	 */
+	public function add_smtp_settings_page() {
+		add_submenu_page(
+			'csd-manager',
+			__('Email Settings', 'csd-manager'),
+			__('Email Settings', 'csd-manager'),
+			'manage_options',
+			'csd-email-settings',
+			array($this, 'render_smtp_settings_page')
+		);
+	}
+	
+	/**
+	 * Update your register_smtp_settings method to include logo settings
+	 */
+	public function register_smtp_settings() {
+		// Existing SMTP settings
+		register_setting('csd_smtp_settings', 'csd_gmail_smtp_enabled');
+		register_setting('csd_smtp_settings', 'csd_gmail_smtp_username');
+		register_setting('csd_smtp_settings', 'csd_gmail_smtp_password');
+		register_setting('csd_smtp_settings', 'csd_gmail_smtp_from_email');
+		register_setting('csd_smtp_settings', 'csd_gmail_smtp_from_name');
+		
+		// NEW: Email logo settings
+		register_setting('csd_smtp_settings', 'csd_email_logo_enabled');
+		register_setting('csd_smtp_settings', 'csd_email_logo_url');
+		register_setting('csd_smtp_settings', 'csd_email_logo_alt');
+		register_setting('csd_smtp_settings', 'csd_email_org_name');
+	}
+	
+	/**
+	 * Updated render_smtp_settings_page method with logo settings
+	 */
+	public function render_smtp_settings_page() {
+		// Handle form submission
+		if (isset($_POST['submit']) && check_admin_referer('csd_smtp_settings_nonce')) {
+			// SMTP settings
+			update_option('csd_gmail_smtp_enabled', isset($_POST['csd_gmail_smtp_enabled']) ? 1 : 0);
+			update_option('csd_gmail_smtp_username', sanitize_email($_POST['csd_gmail_smtp_username']));
+			update_option('csd_gmail_smtp_from_email', sanitize_email($_POST['csd_gmail_smtp_from_email']));
+			update_option('csd_gmail_smtp_from_name', sanitize_text_field($_POST['csd_gmail_smtp_from_name']));
+			
+			// Only update password if it's provided
+			if (!empty($_POST['csd_gmail_smtp_password'])) {
+				update_option('csd_gmail_smtp_password', sanitize_text_field($_POST['csd_gmail_smtp_password']));
+			}
+			
+			// NEW: Logo settings
+			update_option('csd_email_logo_enabled', isset($_POST['csd_email_logo_enabled']) ? 1 : 0);
+			update_option('csd_email_logo_url', esc_url_raw($_POST['csd_email_logo_url']));
+			update_option('csd_email_logo_alt', sanitize_text_field($_POST['csd_email_logo_alt']));
+			update_option('csd_email_org_name', sanitize_text_field($_POST['csd_email_org_name']));
+			
+			echo '<div class="notice notice-success"><p>' . __('Settings saved successfully!', 'csd-manager') . '</p></div>';
+		}
+		
+		// Get current settings
+		$enabled = get_option('csd_gmail_smtp_enabled', false);
+		$username = get_option('csd_gmail_smtp_username', '');
+		$password = get_option('csd_gmail_smtp_password', '');
+		$from_email = get_option('csd_gmail_smtp_from_email', get_option('admin_email'));
+		$from_name = get_option('csd_gmail_smtp_from_name', get_bloginfo('name'));
+		
+		// NEW: Get logo settings
+		$logo_enabled = get_option('csd_email_logo_enabled', false);
+		$logo_url = get_option('csd_email_logo_url', '');
+		$logo_alt = get_option('csd_email_logo_alt', get_bloginfo('name') . ' Logo');
+		$org_name = get_option('csd_email_org_name', get_bloginfo('name'));
+		?>
+		<div class="wrap">
+			<h1><?php _e('Email Settings', 'csd-manager'); ?></h1>
+			
+			<form method="post" action="">
+				<?php wp_nonce_field('csd_smtp_settings_nonce'); ?>
+				
+				<!-- Gmail SMTP Configuration -->
+				<div class="card" style="max-width: 800px;">
+					<h2><?php _e('Gmail SMTP Configuration', 'csd-manager'); ?></h2>
+					<p><?php _e('Configure Gmail SMTP to ensure reliable delivery of query monitoring notifications.', 'csd-manager'); ?></p>
+					
+					<table class="form-table">
+						<tr>
+							<th scope="row"><?php _e('Enable Gmail SMTP', 'csd-manager'); ?></th>
+							<td>
+								<label>
+									<input type="checkbox" name="csd_gmail_smtp_enabled" value="1" <?php checked($enabled, 1); ?> />
+									<?php _e('Use Gmail SMTP for query monitoring emails', 'csd-manager'); ?>
+								</label>
+								<p class="description"><?php _e('When enabled, emails will be sent through Gmail SMTP instead of the server\'s default mail function.', 'csd-manager'); ?></p>
+							</td>
+						</tr>
+						
+						<tr>
+							<th scope="row"><?php _e('Gmail Username', 'csd-manager'); ?></th>
+							<td>
+								<input type="email" name="csd_gmail_smtp_username" value="<?php echo esc_attr($username); ?>" class="regular-text" placeholder="your-email@gmail.com" />
+								<p class="description"><?php _e('Your Gmail email address.', 'csd-manager'); ?></p>
+							</td>
+						</tr>
+						
+						<tr>
+							<th scope="row"><?php _e('Gmail App Password', 'csd-manager'); ?></th>
+							<td>
+								<input type="password" name="csd_gmail_smtp_password" value="" class="regular-text" placeholder="<?php echo $password ? '••••••••••••••••' : 'Enter App Password'; ?>" />
+								<p class="description">
+									<?php _e('Your Gmail App Password (not your regular password).', 'csd-manager'); ?>
+									<br>
+									<strong><?php _e('Setup Instructions:', 'csd-manager'); ?></strong>
+									<br>1. <?php _e('Enable 2-Step Verification on your Gmail account', 'csd-manager'); ?>
+									<br>2. <?php _e('Go to Google Account settings > Security > App passwords', 'csd-manager'); ?>
+									<br>3. <?php _e('Generate an app password for "Mail"', 'csd-manager'); ?>
+									<br>4. <?php _e('Use that 16-character password here', 'csd-manager'); ?>
+								</p>
+							</td>
+						</tr>
+						
+						<tr>
+							<th scope="row"><?php _e('From Email', 'csd-manager'); ?></th>
+							<td>
+								<input type="email" name="csd_gmail_smtp_from_email" value="<?php echo esc_attr($from_email); ?>" class="regular-text" />
+								<p class="description"><?php _e('Email address that will appear as the sender. Should usually match your Gmail username.', 'csd-manager'); ?></p>
+							</td>
+						</tr>
+						
+						<tr>
+							<th scope="row"><?php _e('From Name', 'csd-manager'); ?></th>
+							<td>
+								<input type="text" name="csd_gmail_smtp_from_name" value="<?php echo esc_attr($from_name); ?>" class="regular-text" />
+								<p class="description"><?php _e('Name that will appear as the sender.', 'csd-manager'); ?></p>
+							</td>
+						</tr>
+					</table>
+				</div>
+				
+				<!-- NEW: Email Branding Configuration -->
+				<div class="card" style="max-width: 800px; margin-top: 20px;">
+					<h2><?php _e('Email Branding & Logo', 'csd-manager'); ?></h2>
+					<p><?php _e('Customize the appearance of your query monitoring emails with your organization\'s branding.', 'csd-manager'); ?></p>
+					
+					<table class="form-table">
+						<tr>
+							<th scope="row"><?php _e('Enable Logo in Emails', 'csd-manager'); ?></th>
+							<td>
+								<label>
+									<input type="checkbox" name="csd_email_logo_enabled" value="1" <?php checked($logo_enabled, 1); ?> />
+									<?php _e('Include logo in email headers', 'csd-manager'); ?>
+								</label>
+								<p class="description"><?php _e('When enabled, your logo will appear at the top of monitoring emails.', 'csd-manager'); ?></p>
+							</td>
+						</tr>
+						
+						<tr>
+							<th scope="row"><?php _e('Logo URL', 'csd-manager'); ?></th>
+							<td>
+								<input type="url" name="csd_email_logo_url" value="<?php echo esc_attr($logo_url); ?>" class="regular-text" placeholder="https://example.com/logo.png" />
+								<p class="description">
+									<?php _e('Full URL to your logo image. Recommended size: 200x60px or similar aspect ratio.', 'csd-manager'); ?>
+									<br><?php _e('Supported formats: PNG, JPG, GIF, SVG', 'csd-manager'); ?>
+								</p>
+								<?php if ($logo_url): ?>
+									<div style="margin-top: 10px; padding: 10px; background: #f9f9f9; border: 1px solid #ddd; border-radius: 4px;">
+										<strong><?php _e('Preview:', 'csd-manager'); ?></strong><br>
+										<img src="<?php echo esc_url($logo_url); ?>" alt="<?php echo esc_attr($logo_alt); ?>" style="max-height: 60px; max-width: 200px; object-fit: contain; margin-top: 5px;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+										<span style="display: none; color: #d63384; font-size: 12px;">❌ Logo could not be loaded</span>
+									</div>
+								<?php endif; ?>
+							</td>
+						</tr>
+						
+						<tr>
+							<th scope="row"><?php _e('Logo Alt Text', 'csd-manager'); ?></th>
+							<td>
+								<input type="text" name="csd_email_logo_alt" value="<?php echo esc_attr($logo_alt); ?>" class="regular-text" />
+								<p class="description"><?php _e('Alternative text for the logo (for accessibility and when images don\'t load).', 'csd-manager'); ?></p>
+							</td>
+						</tr>
+						
+						<tr>
+							<th scope="row"><?php _e('Organization Name', 'csd-manager'); ?></th>
+							<td>
+								<input type="text" name="csd_email_org_name" value="<?php echo esc_attr($org_name); ?>" class="regular-text" />
+								<p class="description"><?php _e('Your organization name for the email footer and copyright notice.', 'csd-manager'); ?></p>
+							</td>
+						</tr>
+					</table>
+				</div>
+				
+				<?php submit_button(__('Save Settings', 'csd-manager')); ?>
+			</form>
+			
+			<?php if ($enabled && $username && $password): ?>
+			<div class="card" style="max-width: 800px; margin-top: 20px;">
+				<h3><?php _e('Test Email Configuration', 'csd-manager'); ?></h3>
+				<p><?php _e('Send a test email to verify your Gmail SMTP configuration and see how your branding looks.', 'csd-manager'); ?></p>
+				
+				<div id="smtp-test-section">
+					<p>
+						<label for="test-email"><?php _e('Test Email Address:', 'csd-manager'); ?></label><br>
+						<input type="email" id="test-email" value="<?php echo esc_attr(wp_get_current_user()->user_email); ?>" class="regular-text" />
+					</p>
+					<p>
+						<button type="button" id="send-test-email" class="button button-secondary"><?php _e('Send Test Email', 'csd-manager'); ?></button>
+						<span id="test-email-status" style="margin-left: 10px;"></span>
+					</p>
+				</div>
+				
+				<script type="text/javascript">
+				jQuery(document).ready(function($) {
+					$('#send-test-email').click(function() {
+						var button = $(this);
+						var status = $('#test-email-status');
+						var testEmail = $('#test-email').val();
+						
+						if (!testEmail) {
+							status.html('<span style="color: red;"><?php _e('Please enter a test email address.', 'csd-manager'); ?></span>');
+							return;
+						}
+						
+						button.prop('disabled', true).text('<?php _e('Sending...', 'csd-manager'); ?>');
+						status.html('<span style="color: blue;"><?php _e('Sending test email...', 'csd-manager'); ?></span>');
+						
+						$.ajax({
+							url: ajaxurl,
+							type: 'POST',
+							data: {
+								action: 'csd_test_smtp_email',
+								test_email: testEmail,
+								nonce: '<?php echo wp_create_nonce('csd-smtp-test-nonce'); ?>'
+							},
+							success: function(response) {
+								if (response.success) {
+									status.html('<span style="color: green;"><?php _e('Test email sent successfully! Check your inbox.', 'csd-manager'); ?></span>');
+								} else {
+									status.html('<span style="color: red;"><?php _e('Failed to send test email: ', 'csd-manager'); ?>' + response.data.message + '</span>');
+								}
+							},
+							error: function() {
+								status.html('<span style="color: red;"><?php _e('Error sending test email.', 'csd-manager'); ?></span>');
+							},
+							complete: function() {
+								button.prop('disabled', false).text('<?php _e('Send Test Email', 'csd-manager'); ?>');
+							}
+						});
+					});
+				});
+				</script>
+			</div>
+			<?php endif; ?>
+			
+			<div class="card" style="max-width: 800px; margin-top: 20px;">
+				<h3><?php _e('Security & Best Practices', 'csd-manager'); ?></h3>
+				<ul>
+					<li><?php _e('Never use your regular Gmail password. Always use an App Password.', 'csd-manager'); ?></li>
+					<li><?php _e('App Passwords can only be generated if 2-Step Verification is enabled.', 'csd-manager'); ?></li>
+					<li><?php _e('Store credentials securely. Consider using wp-config.php constants for production.', 'csd-manager'); ?></li>
+					<li><?php _e('Gmail has sending limits: 500 emails per day for free accounts, 2000 for paid accounts.', 'csd-manager'); ?></li>
+					<li><?php _e('Host your logo on a reliable server (your website or CDN) for best email delivery.', 'csd-manager'); ?></li>
+				</ul>
+			</div>
+		</div>
+		<?php
+	}
+	
+	/**
+	 * AJAX handler for testing SMTP email - UPDATED VERSION
+	 */
+	public function ajax_test_smtp_email() {
+		// Check nonce
+		if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'csd-smtp-test-nonce')) {
+			wp_send_json_error(array('message' => __('Security check failed.', 'csd-manager')));
+			return;
+		}
+		
+		if (!current_user_can('manage_options')) {
+			wp_send_json_error(array('message' => __('You do not have permission to perform this action.', 'csd-manager')));
+			return;
+		}
+		
+		$test_email = sanitize_email($_POST['test_email']);
+		
+		if (!is_email($test_email)) {
+			wp_send_json_error(array('message' => __('Invalid email address.', 'csd-manager')));
+			return;
+		}
+		
+		// Create test content using the enhanced template
+		$subject = '[' . get_bloginfo('name') . '] Gmail SMTP & Email Template Test';
+		$body = $this->create_test_email_body();
+		
+		// Send test email using the same method as monitoring emails
+		if (method_exists($this, 'send_gmail_smtp_email')) {
+			$sent = $this->send_gmail_smtp_email($test_email, 'Test Recipient', $subject, $body);
+		} else {
+			// Fallback to wp_mail if SMTP method doesn't exist yet
+			$sent = wp_mail(
+				$test_email,
+				$subject,
+				$body,
+				array('Content-Type: text/html; charset=UTF-8')
+			);
+		}
+		
+		if ($sent) {
+			wp_send_json_success(array('message' => __('Test email sent successfully! Check your inbox to see how your branding looks.', 'csd-manager')));
+		} else {
+			wp_send_json_error(array('message' => __('Failed to send test email. Check your settings and try again.', 'csd-manager')));
+		}
+	}
+	
+	/**
+	 * Create test email body - GMAIL-OPTIMIZED VERSION
+	 */
+	private function create_test_email_body() {
+		// Create sample test data
+		$test_changes = array(
+			'total_changes' => 5,
+			'new_count' => 3,
+			'modified_count' => 2,
+			'deleted_count' => 0,
+			'previous_total' => 125,
+			'current_total' => 128
+		);
+		
+		// Get logo settings
+		$logo_settings = $this->get_email_logo_settings();
+		
+		$body = '<!DOCTYPE html>';
+		$body .= '<html>';
+		$body .= '<head>';
+		$body .= '<meta charset="UTF-8">';
+		$body .= '<style>';
+		// Same minimal CSS as above
+		$body .= 'body{font-family:Arial,sans-serif;line-height:1.6;color:#333;margin:0;padding:0;background:#f4f4f4}';
+		$body .= '.container{max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden}';
+		$body .= '.header{background:linear-gradient(135deg, #ff9800 0%, #ffc107 100%);color:#fff;padding:30px;text-align:center}';
+		$body .= '.logo{margin-bottom:15px}';
+		$body .= '.logo img{max-height:50px;max-width:180px;background:rgba(255,255,255,0.2);padding:8px;border-radius:4px}';
+		$body .= '.content{padding:25px}';
+		$body .= '.test-notice{background:#fff3cd;border:1px solid #ffeaa7;border-radius:6px;padding:12px;margin:15px 0;text-align:center;color:#856404}';
+		$body .= '.info-box{background:#f8f9fa;border-left:4px solid #ff9800;padding:15px;margin:15px 0;border-radius:0 4px 4px 0}';
+		$body .= '.summary{background:#fff;border:1px solid #e0e0e0;border-radius:6px;padding:20px;margin:15px 0}';
+		$body .= '.stats{display:table;width:100%;margin:15px 0}';
+		$body .= '.stat{display:table-cell;text-align:center;padding:12px;background:#f8f9fa;border:1px solid #e0e0e0}';
+		$body .= '.stat-num{font-size:20px;font-weight:bold;color:#ff9800;margin-bottom:4px}';
+		$body .= '.stat-label{font-size:11px;color:#666;text-transform:uppercase}';
+		$body .= '.overview{background:#e8f5e8;border:1px solid #c3e6c3;border-radius:6px;padding:18px;margin:15px 0}';
+		$body .= '.highlight{background:linear-gradient(135deg, #ff6b6b 0%, #ffa726 100%);color:#fff;padding:12px;border-radius:4px;margin:10px 0;text-align:center}';
+		$body .= '.footer{background:#f8f9fa;padding:15px;border-top:1px solid #e0e0e0;text-align:center;font-size:11px;color:#666}';
+		$body .= '</style>';
+		$body .= '</head>';
+		$body .= '<body>';
+		
+		$body .= '<div class="container">';
+		
+		// Header with logo
+		$body .= '<div class="header">';
+		if ($logo_settings['enabled'] && !empty($logo_settings['url'])) {
+			$body .= '<div class="logo">';
+			$body .= '<img src="' . esc_url($logo_settings['url']) . '" alt="' . esc_attr($logo_settings['alt_text']) . '">';
+			$body .= '</div>';
+		}
+		$body .= '<h1 style="margin:0;font-size:22px;">Email Template Test</h1>';
+		$body .= '</div>';
+		
+		// Main content
+		$body .= '<div class="content">';
+		
+		// Test notice
+		$body .= '<div class="test-notice">';
+		$body .= '<strong>This is a test email</strong><br>';
+		$body .= 'Preview of your query monitoring email template';
+		$body .= '</div>';
+		
+		// Query information
+		$body .= '<div class="info-box">';
+		$body .= '<p style="margin:4px 0;"><strong>Query:</strong> Sample - NCAA Football Head Coaches</p>';
+		$body .= '<p style="margin:4px 0;"><strong>Date:</strong> ' . date('M j, Y g:i A T') . '</p>';
+		$body .= '<p style="margin:4px 0;"><strong>System:</strong> ' . esc_html(get_bloginfo('name')) . '</p>';
+		$body .= '</div>';
+		
+		// Changes summary with sample data
+		$body .= '<div class="summary">';
+		$body .= '<h3 style="margin-top:0;color:#495057;border-bottom:2px solid #e0e0e0;padding-bottom:8px;">Summary of Changes (Sample)</h3>';
+		
+		$body .= '<div class="highlight">';
+		$body .= '<strong>' . number_format($test_changes['total_changes']) . ' changes detected</strong>';
+		$body .= '</div>';
+		
+		$body .= '<div class="stats">';
+		$body .= '<div class="stat">';
+		$body .= '<div class="stat-num">' . number_format($test_changes['new_count']) . '</div>';
+		$body .= '<div class="stat-label">New</div>';
+		$body .= '</div>';
+		$body .= '<div class="stat">';
+		$body .= '<div class="stat-num">' . number_format($test_changes['modified_count']) . '</div>';
+		$body .= '<div class="stat-label">Modified</div>';
+		$body .= '</div>';
+		$body .= '<div class="stat">';
+		$body .= '<div class="stat-num">' . number_format($test_changes['deleted_count']) . '</div>';
+		$body .= '<div class="stat-label">Deleted</div>';
+		$body .= '</div>';
+		$body .= '<div class="stat">';
+		$body .= '<div class="stat-num">' . number_format($test_changes['total_changes']) . '</div>';
+		$body .= '<div class="stat-label">Total</div>';
+		$body .= '</div>';
+		$body .= '</div>';
+		$body .= '</div>';
+		
+		// Data overview
+		$body .= '<div class="overview">';
+		$body .= '<h3 style="margin-top:0;color:#2e7d32;">Data Overview (Sample)</h3>';
+		$body .= '<p style="margin:5px 0;"><strong>Previous:</strong> ' . number_format($test_changes['previous_total']) . ' records</p>';
+		$body .= '<p style="margin:5px 0;"><strong>Current:</strong> ' . number_format($test_changes['current_total']) . ' records</p>';
+		$body .= '<p style="margin:5px 0;"><strong>Net Change:</strong> <span style="color:#2e7d32;">+3 records</span></p>';
+		$body .= '</div>';
+		
+		$body .= '</div>'; // End content
+		
+		// Footer
+		$body .= '<div class="footer">';
+		$body .= '<p style="margin:5px 0;">Test email from College Sports Directory Manager</p>';
+		$body .= '<p style="margin:5px 0;">Your email template is working correctly!</p>';
+		if (!empty($logo_settings['organization_name'])) {
+			$body .= '<p style="margin:5px 0;">&copy; ' . date('Y') . ' ' . esc_html($logo_settings['organization_name']) . '</p>';
+		}
+		$body .= '</div>';
+		
+		$body .= '</div>'; // End container
+		$body .= '</body>';
+		$body .= '</html>';
+		
+		return $body;
 	}
 }
